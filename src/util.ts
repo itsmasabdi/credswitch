@@ -47,6 +47,52 @@ export function atomicWrite(file: string, content: string, mode = 0o600): void {
   fs.renameSync(tmp, file);
 }
 
+export const ACCOUNT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Hold an exclusive lock file while running fn. Guards config load-modify-save
+ * against concurrent agents. Locks older than 10s are treated as stale
+ * (crashed process) and evicted.
+ */
+export function withLock<T>(lockPath: string, fn: () => T): T {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > 10_000) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        continue; // lock vanished between stat/unlink — retry immediately
+      }
+      if (Date.now() > deadline) {
+        throw new CliError(`Another agentctx process holds the config lock (${lockPath}). Retry in a moment.`);
+      }
+      sleepSync(50);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // already gone — nothing to release
+    }
+  }
+}
+
 export interface ParsedArgs {
   pos: string[];
   opts: Record<string, string | boolean>;

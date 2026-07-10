@@ -2,7 +2,7 @@ import path from "node:path";
 import type { Config } from "./config.js";
 import { CliError, realpathSafe } from "./util.js";
 
-export type ContextSource = "flag" | "shell-override" | "binding" | "default" | "none";
+export type ContextSource = "flag" | "shell-override" | "binding" | "inherited" | "default" | "none";
 
 export interface Resolution {
   name: string | null;
@@ -18,7 +18,8 @@ export interface ResolveOptions {
 
 /**
  * Single resolver used by every command.
- * Precedence: --context flag → pinned shell (csw shell) → nearest folder binding → global default → none.
+ * Precedence: --context flag → pinned shell (csw shell) → nearest folder binding
+ * → inherited from parent process → global default → none.
  */
 export function resolveContext(config: Config, opts: ResolveOptions): Resolution {
   if (opts.flag) {
@@ -54,6 +55,17 @@ export function resolveContext(config: Config, opts: ResolveOptions): Resolution
     dir = parent;
   }
 
+  if (opts.env.AGENTCTX_CONTEXT) {
+    const name = opts.env.AGENTCTX_CONTEXT;
+    if (!config.contexts[name]) {
+      throw new CliError(
+        `This process inherited context '${name}' (AGENTCTX_CONTEXT), which no longer exists.\n` +
+          `Run 'eval "$(csw shell --off)"' or unset AGENTCTX_CONTEXT, or recreate the context.`
+      );
+    }
+    return { name, source: "inherited" };
+  }
+
   if (config.defaultContext) {
     assertContext(config, config.defaultContext, "defaultContext");
     return { name: config.defaultContext, source: "default" };
@@ -77,6 +89,8 @@ export function describeSource(res: Resolution): string {
       return "pinned shell (csw shell)";
     case "binding":
       return `folder binding at ${res.bindingDir}`;
+    case "inherited":
+      return "inherited from parent process (AGENTCTX_CONTEXT)";
     case "default":
       return "global default (csw use)";
     case "none":

@@ -1,6 +1,6 @@
 {
   "name": "agentctx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Give every project its own identity — context switching for AI agents and cloud CLIs (Claude Code, Codex, Azure, gcloud, GitHub, kubectl).",
   "type": "module",
   "license": "MIT",

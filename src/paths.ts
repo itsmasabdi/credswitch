@@ -22,3 +22,13 @@ export function stateRoot(): string {
 export function bindingsListPath(): string {
   return path.join(path.dirname(configPath()), "bindings.list");
 }
+
+/**
+ * Read-only directory that denied providers are pointed into. Because it is
+ * unwritable, no CLI can ever persist credentials there — an accidental
+ * `az login` inside a denied context fails instead of silently creating a
+ * shared fallback identity.
+ */
+export function deniedRoot(): string {
+  return path.join(stateRoot(), "denied");
+}

@@ -9,8 +9,10 @@ export interface AccountConfig {
   stateDir?: string;
   /** kubeconfig file path (kubernetes adapter). */
   kubeconfig?: string;
-  /** Explicitly use the provider's system default login (claude adapter). */
+  /** Explicitly use the provider's system default login. */
   system?: boolean;
+  /** Identity summary captured at enrollment; doctor fails on drift. */
+  pin?: string;
 }
 
 export interface IdentitySpec {
@@ -23,13 +25,20 @@ export interface Adapter {
   label: string;
   /** Binary used for login/identity checks. */
   cli: string;
-  /** Every env var this adapter owns. Cleared before any context is applied. */
+  /**
+   * Every credential channel this adapter owns: state-dir selectors, token
+   * variables, host selectors. All of them are cleared before any context is
+   * applied — nothing on this list can leak from the calling shell.
+   */
   managedEnv: string[];
-  /** Whether `system: true` accounts (provider default login) are allowed. */
-  allowSystem: boolean;
-  /** Human note about how isolation works for this adapter. */
-  isolation: string;
+  /**
+   * Environment that denies this provider when a context omits it: selectors
+   * point into the read-only denied root, so the CLI reports not-logged-in
+   * (or fails to write state) instead of silently using the machine default.
+   */
+  deniedEnv(deniedRoot: string): Record<string, string>;
   validateAccount(account: AccountConfig): string | null;
+  /** Never called for system accounts — those leave every managed var unset. */
   envFor(account: AccountConfig): Record<string, string | null>;
   /** Where `account add` creates fresh isolated state. */
   freshStateDir?(accountName: string): string;
@@ -38,12 +47,12 @@ export interface Adapter {
   identity?(account: AccountConfig): IdentitySpec;
 }
 
-function requireStateDir(adapterName: string) {
-  return (account: AccountConfig): string | null => {
-    if (account.system) return `adapter '${adapterName}' does not support system accounts`;
-    if (!account.stateDir) return `missing 'stateDir'`;
-    return null;
-  };
+function validateStateDirAccount(account: AccountConfig): string | null {
+  if (account.system) {
+    return account.stateDir || account.kubeconfig ? "system accounts take no --path/--kubeconfig" : null;
+  }
+  if (!account.stateDir) return "missing 'stateDir' (or set 'system: true' for the machine default)";
+  return null;
 }
 
 function firstLine(text: string): string {
@@ -54,10 +63,9 @@ const azure: Adapter = {
   name: "azure",
   label: "Azure CLI",
   cli: "az",
-  managedEnv: ["AZURE_CONFIG_DIR"],
-  allowSystem: false,
-  isolation: "isolated config dir via AZURE_CONFIG_DIR",
-  validateAccount: requireStateDir("azure"),
+  managedEnv: ["AZURE_CONFIG_DIR", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"],
+  deniedEnv: (root) => ({ AZURE_CONFIG_DIR: path.join(root, "azure") }),
+  validateAccount: validateStateDirAccount,
   envFor: (a) => ({ AZURE_CONFIG_DIR: expandPath(a.stateDir!) }),
   freshStateDir: (name) => path.join(stateRoot(), "azure", name),
   loginCommand: () => ["az", "login"],
@@ -82,10 +90,9 @@ const gcloud: Adapter = {
   name: "gcloud",
   label: "Google Cloud SDK",
   cli: "gcloud",
-  managedEnv: ["CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME"],
-  allowSystem: false,
-  isolation: "isolated config dir via CLOUDSDK_CONFIG (includes ADC)",
-  validateAccount: requireStateDir("gcloud"),
+  managedEnv: ["CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME", "GOOGLE_APPLICATION_CREDENTIALS"],
+  deniedEnv: (root) => ({ CLOUDSDK_CONFIG: path.join(root, "gcloud") }),
+  validateAccount: validateStateDirAccount,
   envFor: (a) => ({ CLOUDSDK_CONFIG: expandPath(a.stateDir!) }),
   freshStateDir: (name) => path.join(stateRoot(), "gcloud", name),
   loginCommand: () => ["gcloud", "auth", "login"],
@@ -104,10 +111,9 @@ const github: Adapter = {
   name: "github",
   label: "GitHub CLI",
   cli: "gh",
-  managedEnv: ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"],
-  allowSystem: false,
-  isolation: "isolated config dir via GH_CONFIG_DIR; GH_TOKEN/GITHUB_TOKEN are cleared so they cannot leak across contexts",
-  validateAccount: requireStateDir("github"),
+  managedEnv: ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"],
+  deniedEnv: (root) => ({ GH_CONFIG_DIR: path.join(root, "github") }),
+  validateAccount: validateStateDirAccount,
   envFor: (a) => ({ GH_CONFIG_DIR: expandPath(a.stateDir!) }),
   freshStateDir: (name) => path.join(stateRoot(), "github", name),
   loginCommand: () => ["gh", "auth", "login"],
@@ -127,18 +133,10 @@ const claude: Adapter = {
   name: "claude",
   label: "Claude Code",
   cli: "claude",
-  managedEnv: ["CLAUDE_CONFIG_DIR"],
-  allowSystem: true,
-  isolation: "isolated config dir via CLAUDE_CONFIG_DIR, or explicit system default (macOS Keychain-bound logins)",
-  validateAccount(account) {
-    if (account.system && account.stateDir) return "use either 'system: true' or 'stateDir', not both";
-    if (!account.system && !account.stateDir) return "missing 'stateDir' (or set 'system: true' for the default login)";
-    return null;
-  },
-  envFor(account): Record<string, string | null> {
-    if (account.system) return {}; // CLAUDE_CONFIG_DIR is already cleared -> provider default
-    return { CLAUDE_CONFIG_DIR: expandPath(account.stateDir!) };
-  },
+  managedEnv: ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+  deniedEnv: (root) => ({ CLAUDE_CONFIG_DIR: path.join(root, "claude") }),
+  validateAccount: validateStateDirAccount,
+  envFor: (a) => ({ CLAUDE_CONFIG_DIR: expandPath(a.stateDir!) }),
   freshStateDir: (name) => path.join(stateRoot(), "claude", name),
   loginCommand: () => ["claude", "auth", "login"],
   identity: () => ({
@@ -164,10 +162,9 @@ const codex: Adapter = {
   name: "codex",
   label: "Codex CLI",
   cli: "codex",
-  managedEnv: ["CODEX_HOME"],
-  allowSystem: false,
-  isolation: "isolated home via CODEX_HOME",
-  validateAccount: requireStateDir("codex"),
+  managedEnv: ["CODEX_HOME", "OPENAI_API_KEY"],
+  deniedEnv: (root) => ({ CODEX_HOME: path.join(root, "codex") }),
+  validateAccount: validateStateDirAccount,
   envFor: (a) => ({ CODEX_HOME: expandPath(a.stateDir!) }),
   freshStateDir: (name) => path.join(stateRoot(), "codex", name),
   loginCommand: () => ["codex", "login"],
@@ -185,11 +182,12 @@ const kubernetes: Adapter = {
   label: "Kubernetes",
   cli: "kubectl",
   managedEnv: ["KUBECONFIG"],
-  allowSystem: false,
-  isolation: "dedicated kubeconfig file via KUBECONFIG (also picked up by helm, k9s, etc.)",
+  deniedEnv: (root) => ({ KUBECONFIG: path.join(root, "kubeconfig") }),
   validateAccount(account) {
-    if (account.system) return "adapter 'kubernetes' does not support system accounts";
-    if (!account.kubeconfig) return "missing 'kubeconfig' (path to a kubeconfig file)";
+    if (account.system) {
+      return account.stateDir || account.kubeconfig ? "system accounts take no --path/--kubeconfig" : null;
+    }
+    if (!account.kubeconfig) return "missing 'kubeconfig' (path to a kubeconfig file, or set 'system: true')";
     return null;
   },
   envFor: (a) => ({ KUBECONFIG: expandPath(a.kubeconfig!) }),

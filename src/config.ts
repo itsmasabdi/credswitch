@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { adapters, getAdapter, type AccountConfig } from "./adapters.js";
 import { bindingsListPath, configPath } from "./paths.js";
-import { atomicWrite, CliError } from "./util.js";
+import { atomicWrite, CliError, withLock } from "./util.js";
 
 export interface ContextConfig {
   description?: string;
@@ -113,6 +113,7 @@ export function validateConfig(config: Config): string[] {
 
   for (const [dir, contextName] of Object.entries(config.bindings)) {
     if (!path.isAbsolute(dir)) errors.push(`binding '${dir}': must be an absolute path`);
+    if (/[\t\n]/.test(dir)) errors.push(`binding '${dir}': path must not contain tabs or newlines`);
     if (!config.contexts[contextName]) errors.push(`binding '${dir}': unknown context '${contextName}'`);
   }
 
@@ -128,12 +129,29 @@ export function saveConfig(config: Config): void {
   if (errors.length > 0) {
     throw new CliError(`Refusing to save invalid config:\n  - ${errors.join("\n  - ")}`);
   }
-  atomicWrite(configPath(), `${JSON.stringify(config, null, 2)}\n`);
+  // List first: if we crash between the writes, the hook over-asks the
+  // resolver (safe) rather than missing a binding transition (stale creds).
   writeBindingsList(config);
+  atomicWrite(configPath(), `${JSON.stringify(config, null, 2)}\n`);
 }
 
-/** Regenerate the plain-text bound-dirs list consumed by the shell hook. */
+/**
+ * Hold the config lock while applying a read-modify-write. All mutating
+ * commands go through here so concurrent agents cannot lose updates.
+ */
+export function mutateConfig(mutator: (config: Config) => void): Config {
+  return withLock(`${configPath()}.lock`, () => {
+    const config = loadConfig();
+    mutator(config);
+    saveConfig(config);
+    return config;
+  });
+}
+
+/** Regenerate the "dir<TAB>context" list consumed by the shell hook's fast path. */
 export function writeBindingsList(config: Config): void {
-  const dirs = Object.keys(config.bindings).sort();
-  atomicWrite(bindingsListPath(), dirs.length > 0 ? `${dirs.join("\n")}\n` : "");
+  const lines = Object.entries(config.bindings)
+    .map(([dir, ctx]) => `${dir}\t${ctx}`)
+    .sort();
+  atomicWrite(bindingsListPath(), lines.length > 0 ? `${lines.join("\n")}\n` : "");
 }

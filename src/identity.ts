@@ -28,7 +28,7 @@ export function runIdentity(account: AccountConfig): IdentityResult {
 
   const overrides: EnvOverrides = {};
   for (const name of allManagedVars()) overrides[name] = null;
-  Object.assign(overrides, adapter.envFor(account));
+  if (!account.system) Object.assign(overrides, adapter.envFor(account));
 
   const result = spawnSync(spec.argv[0], spec.argv.slice(1), {
     env: applyEnv(process.env, overrides),

@@ -18,7 +18,7 @@ import { adapterNames } from "./adapters.js";
 import { configPath, stateRoot } from "./paths.js";
 import { CliError, redactHome } from "./util.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 function printHelp(): void {
   console.log(`agentctx ${VERSION} — one identity context per project, for every CLI and AI agent.
@@ -28,11 +28,14 @@ Usage:
   csw account add <adapter> --name <name>      fresh isolated account (launches the provider's login)
       [--path <dir>]                           ...or reference existing provider state (never copied)
       [--kubeconfig <file>]                    ...kubernetes: reference a kubeconfig file
-      [--system]                               ...claude: explicitly use the system default login
+      [--system]                               ...explicitly use the machine's default login
       [--context <ctx>] [--no-login]
   csw account list
+  csw account login <adapter>:<name>           (re)run the provider's login for an account
+  csw account pin <adapter>:<name>             record the current identity; doctor fails on drift
   csw account remove <adapter>:<name>          config only — never deletes credential state
   csw context add <name> <adapter>:<acct> ...  compose accounts into a context
+  csw context set <name> <adapter>:<acct> ...  replace a context's accounts
   csw context remove <name>
   csw list                                     contexts, accounts, bindings
   csw use <context>                            set the global default context
@@ -43,12 +46,15 @@ Usage:
   csw shell [<context>]                        eval-able exports; pins this shell
   csw shell --off                              unpin and clear managed variables
   csw hook <zsh|bash>                          auto-switch hook for your shell rc
-  csw doctor [<context>]                       verify paths, CLIs, and live identities
+  csw doctor [<context>]                       verify paths, CLIs, live identities, drift
 
 Adapters: ${adapterNames().join(", ")}
+An adapter a context omits is DENIED (its CLI sees empty, read-only state).
+Use an explicit --system account to pass the machine default through.
 
 Context resolution order:
-  --context flag → pinned shell (csw shell) → nearest folder binding → default (csw use) → none
+  --context flag → pinned shell (csw shell) → nearest folder binding
+  → inherited (AGENTCTX_CONTEXT) → default (csw use) → none
 
 Environment:
   AGENTCTX_CONFIG        override config file   (default ${redactHome(configPath())})

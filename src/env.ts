@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import { adapters, getAdapter } from "./adapters.js";
 import type { Config } from "./config.js";
-import { CliError, shellQuote } from "./util.js";
+import { deniedRoot, stateRoot } from "./paths.js";
+import { CliError, ensureDir, shellQuote } from "./util.js";
 
 /** Values of `null` mean "unset this variable". */
 export type EnvOverrides = Record<string, string | null>;
@@ -14,9 +16,28 @@ export function allManagedVars(): string[] {
 }
 
 /**
- * Complete environment for a context: every managed variable is cleared first,
- * then the context's accounts are applied. An omitted adapter therefore never
- * inherits whatever happened to be exported in the calling shell.
+ * Create the denied root as a read-only directory. Denied selectors point at
+ * children of it, so no provider CLI can ever create or persist state there.
+ */
+function ensureDeniedRoot(): void {
+  try {
+    ensureDir(stateRoot());
+    const root = deniedRoot();
+    if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o500 });
+    else fs.chmodSync(root, 0o500);
+  } catch {
+    // Even if this fails, denied selectors point at nonexistent paths — still closed.
+  }
+}
+
+/**
+ * Complete environment for a context:
+ * 1. every managed credential channel of every adapter is cleared;
+ * 2. adapters the context omits are DENIED — selectors point into the
+ *    read-only denied root, so their CLIs report not-logged-in instead of
+ *    silently using the machine default;
+ * 3. the context's accounts are applied (system accounts leave their
+ *    adapter's variables unset — the explicit machine default).
  */
 export function envForContext(config: Config, contextName: string): EnvOverrides {
   const context = config.contexts[contextName];
@@ -28,14 +49,33 @@ export function envForContext(config: Config, contextName: string): EnvOverrides
   const env: EnvOverrides = {};
   for (const name of allManagedVars()) env[name] = null;
 
+  const present = new Set(context.accounts.map((id) => config.accounts[id]?.adapter));
+  const denied = deniedRoot();
+  let anyDenied = false;
+  for (const [name, adapter] of Object.entries(adapters)) {
+    if (!present.has(name)) {
+      Object.assign(env, adapter.deniedEnv(denied));
+      anyDenied = true;
+    }
+  }
+  if (anyDenied) ensureDeniedRoot();
+
   for (const id of context.accounts) {
     const account = config.accounts[id];
     if (!account) throw new CliError(`Context '${contextName}' references unknown account '${id}'.`);
-    Object.assign(env, getAdapter(account.adapter).envFor(account));
+    if (!account.system) Object.assign(env, getAdapter(account.adapter).envFor(account));
   }
 
   env.AGENTCTX_CONTEXT = contextName;
   return env;
+}
+
+/** Adapters a context does not include (and therefore denies). */
+export function deniedAdapters(config: Config, contextName: string): string[] {
+  const context = config.contexts[contextName];
+  if (!context) return [];
+  const present = new Set(context.accounts.map((id) => config.accounts[id]?.adapter));
+  return Object.keys(adapters).filter((name) => !present.has(name)).sort();
 }
 
 /** Environment that removes every trace of agentctx from a shell. */
@@ -45,6 +85,7 @@ export function clearedEnv(): EnvOverrides {
   env.AGENTCTX_CONTEXT = null;
   env.AGENTCTX_OVERRIDE = null;
   env.AGENTCTX_BOUND_DIR = null;
+  env.AGENTCTX_HOOK_KEY = null;
   return env;
 }
 
