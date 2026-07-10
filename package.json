@@ -1,5 +1,5 @@
 {
-  "name": "credctx",
+  "name": "credswitch",
   "version": "0.2.0",
   "description": "Give every project its own identity — context switching for AI agents and cloud CLIs (Claude Code, Codex, Azure, gcloud, GitHub, kubectl).",
   "type": "module",
@@ -7,15 +7,15 @@
   "author": "Masoud Abdi",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/itsmasabdi/credctx.git"
+    "url": "git+https://github.com/itsmasabdi/credswitch.git"
   },
-  "homepage": "https://github.com/itsmasabdi/credctx#readme",
+  "homepage": "https://github.com/itsmasabdi/credswitch#readme",
   "bugs": {
-    "url": "https://github.com/itsmasabdi/credctx/issues"
+    "url": "https://github.com/itsmasabdi/credswitch/issues"
   },
   "bin": {
     "csw": "dist/src/cli.js",
-    "credctx": "dist/src/cli.js"
+    "credswitch": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
@@ -27,7 +27,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test dist/test/credctx.test.js",
+    "test": "tsc && node --test dist/test/credswitch.test.js",
     "prepublishOnly": "npm test"
   },
   "keywords": [

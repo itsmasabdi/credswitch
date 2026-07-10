@@ -50,7 +50,7 @@ interface Fixture {
 
 function setup(): Fixture {
   // realpath: on macOS os.tmpdir() sits behind the /var -> /private/var symlink
-  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "credctx-")));
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "credswitch-")));
   const home = path.join(tmp, "home");
   const state = path.join(tmp, "state");
   const bin = path.join(tmp, "bin");
@@ -73,8 +73,8 @@ function setup(): Fixture {
     env: {
       HOME: home,
       PATH: `${bin}:/usr/bin:/bin`,
-      CREDCTX_CONFIG: configFile,
-      CREDCTX_STATE_HOME: state
+      CREDSWITCH_CONFIG: configFile,
+      CREDSWITCH_STATE_HOME: state
     }
   };
 }
@@ -150,7 +150,7 @@ test("omitted adapters are denied, token variables never leak", () => {
   ok(csw(f, ["context", "add", "solo", "claude:default"]), "solo ctx");
 
   const probe =
-    'printf "%s|%s|%s|%s|%s" "${AZURE_CONFIG_DIR:-unset}" "${GH_TOKEN:-unset}" "${ANTHROPIC_API_KEY:-unset}" "${CLAUDE_CONFIG_DIR:-unset}" "$CREDCTX_CONTEXT"';
+    'printf "%s|%s|%s|%s|%s" "${AZURE_CONFIG_DIR:-unset}" "${GH_TOKEN:-unset}" "${ANTHROPIC_API_KEY:-unset}" "${CLAUDE_CONFIG_DIR:-unset}" "$CREDSWITCH_CONTEXT"';
   const result = csw(f, ["run", "-c", "solo", "--", "sh", "-c", probe], {
     env: {
       AZURE_CONFIG_DIR: "/leaky/azure",
@@ -283,11 +283,11 @@ test("resolver: pinned shell beats binding, --context flag beats pin", () => {
   fs.mkdirSync(projectA, { recursive: true });
   ok(csw(f, ["bind", "ctx-alice", "--dir", projectA]), "bind a");
 
-  const pinnedEnv = { CREDCTX_OVERRIDE: "1", CREDCTX_CONTEXT: "ctx-bob" };
+  const pinnedEnv = { CREDSWITCH_OVERRIDE: "1", CREDSWITCH_CONTEXT: "ctx-bob" };
   const pinned = csw(f, ["current"], { cwd: projectA, env: pinnedEnv });
   assert.equal(pinned.stdout.trim(), "ctx-bob");
 
-  const flag = csw(f, ["run", "-c", "ctx-alice", "--", "sh", "-c", 'printf "%s" "$CREDCTX_CONTEXT"'], {
+  const flag = csw(f, ["run", "-c", "ctx-alice", "--", "sh", "-c", 'printf "%s" "$CREDSWITCH_CONTEXT"'], {
     cwd: projectA,
     env: pinnedEnv
   });
@@ -303,11 +303,11 @@ test("resolver: inherited context beats default, loses to binding", () => {
   ok(csw(f, ["use", "ctx-bob"]), "use");
   ok(csw(f, ["bind", "ctx-bob", "--dir", projectB]), "bind b");
 
-  const inherited = csw(f, ["current", "--explain"], { cwd: f.home, env: { CREDCTX_CONTEXT: "ctx-alice" } });
+  const inherited = csw(f, ["current", "--explain"], { cwd: f.home, env: { CREDSWITCH_CONTEXT: "ctx-alice" } });
   assert.match(inherited.stdout, /Context: ctx-alice/);
   assert.match(inherited.stdout, /inherited from parent process/);
 
-  const bound = csw(f, ["current"], { cwd: projectB, env: { CREDCTX_CONTEXT: "ctx-alice" } });
+  const bound = csw(f, ["current"], { cwd: projectB, env: { CREDSWITCH_CONTEXT: "ctx-alice" } });
   assert.equal(bound.stdout.trim(), "ctx-bob");
 });
 
@@ -320,8 +320,8 @@ test("shell prints pinned eval-able exports with safe quoting and denied selecto
 
   const result = csw(f, ["shell", "sp"]);
   ok(result, "shell");
-  assert.match(result.stdout, /export CREDCTX_OVERRIDE='1'/);
-  assert.match(result.stdout, /export CREDCTX_CONTEXT='sp'/);
+  assert.match(result.stdout, /export CREDSWITCH_OVERRIDE='1'/);
+  assert.match(result.stdout, /export CREDSWITCH_CONTEXT='sp'/);
   assert.ok(result.stdout.includes(`export AZURE_CONFIG_DIR='${spaced}'`));
   assert.ok(result.stdout.includes(`export GH_CONFIG_DIR='${path.join(f.state, "denied", "github")}'`));
   assert.match(result.stdout, /unset GH_TOKEN/);
@@ -329,9 +329,9 @@ test("shell prints pinned eval-able exports with safe quoting and denied selecto
 
   const off = csw(f, ["shell", "--off"]);
   ok(off, "shell --off");
-  assert.match(off.stdout, /unset CREDCTX_OVERRIDE/);
+  assert.match(off.stdout, /unset CREDSWITCH_OVERRIDE/);
   assert.match(off.stdout, /unset AZURE_CONFIG_DIR/);
-  assert.match(off.stdout, /unset CREDCTX_HOOK_KEY/);
+  assert.match(off.stdout, /unset CREDSWITCH_HOOK_KEY/);
 });
 
 test("env --cwd resolves bindings and default through the real resolver", () => {
@@ -343,23 +343,23 @@ test("env --cwd resolves bindings and default through the real resolver", () => 
 
   const bound = csw(f, ["env", "--cwd", projectA]);
   ok(bound, "env bound");
-  assert.match(bound.stdout, /export CREDCTX_BOUND_DIR=/);
-  assert.match(bound.stdout, /export CREDCTX_CONTEXT='ctx-alice'/);
-  assert.match(bound.stdout, /unset CREDCTX_OVERRIDE/);
+  assert.match(bound.stdout, /export CREDSWITCH_BOUND_DIR=/);
+  assert.match(bound.stdout, /export CREDSWITCH_CONTEXT='ctx-alice'/);
+  assert.match(bound.stdout, /unset CREDSWITCH_OVERRIDE/);
 
   // Unbound location + default context -> the default is applied (not cleared).
   ok(csw(f, ["use", "ctx-bob"]), "use");
   const unbound = csw(f, ["env", "--cwd", f.home]);
   ok(unbound, "env default");
-  assert.match(unbound.stdout, /export CREDCTX_CONTEXT='ctx-bob'/);
-  assert.match(unbound.stdout, /unset CREDCTX_BOUND_DIR/);
+  assert.match(unbound.stdout, /export CREDSWITCH_CONTEXT='ctx-bob'/);
+  assert.match(unbound.stdout, /unset CREDSWITCH_BOUND_DIR/);
 
   // No binding, no default -> everything cleared.
   const fresh = setup();
   seedTwoAccounts(fresh);
   const cleared = csw(fresh, ["env", "--cwd", fresh.home]);
   ok(cleared, "env cleared");
-  assert.match(cleared.stdout, /unset CREDCTX_CONTEXT/);
+  assert.match(cleared.stdout, /unset CREDSWITCH_CONTEXT/);
 });
 
 test("one identity per adapter per context is enforced", () => {
@@ -489,7 +489,7 @@ test("hook output is resolver-backed with a fail-closed fallback", () => {
   ok(csw(f, ["init"]), "init");
   const zsh = csw(f, ["hook", "zsh"]);
   ok(zsh, "hook zsh");
-  assert.match(zsh.stdout, /add-zsh-hook chpwd _credctx_hook/);
+  assert.match(zsh.stdout, /add-zsh-hook chpwd _credswitch_hook/);
   assert.match(zsh.stdout, /csw env --cwd/);
   assert.match(zsh.stdout, /unset .*AZURE_CONFIG_DIR/);
   assert.ok(zsh.stdout.includes("bindings.list"));
@@ -516,11 +516,11 @@ test("zsh hook applies bindings, default, and clears on leave", { skip: !zshAvai
 
   const script = `
 eval "$(csw hook zsh)"
-echo "start:\${CREDCTX_CONTEXT:-none}"
+echo "start:\${CREDSWITCH_CONTEXT:-none}"
 cd ${nested}
-echo "nested:\${CREDCTX_CONTEXT:-none}"
+echo "nested:\${CREDSWITCH_CONTEXT:-none}"
 cd /
-echo "out:\${CREDCTX_CONTEXT:-none}:\${AZURE_CONFIG_DIR:+set}"
+echo "out:\${CREDSWITCH_CONTEXT:-none}:\${AZURE_CONFIG_DIR:+set}"
 `;
   const result = spawnSync("zsh", ["-f", "-c", script], {
     encoding: "utf8",

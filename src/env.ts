@@ -66,7 +66,7 @@ export function envForContext(config: Config, contextName: string): EnvOverrides
     if (!account.system) Object.assign(env, getAdapter(account.adapter).envFor(account));
   }
 
-  env.CREDCTX_CONTEXT = contextName;
+  env.CREDSWITCH_CONTEXT = contextName;
   return env;
 }
 
@@ -78,14 +78,14 @@ export function deniedAdapters(config: Config, contextName: string): string[] {
   return Object.keys(adapters).filter((name) => !present.has(name)).sort();
 }
 
-/** Environment that removes every trace of credctx from a shell. */
+/** Environment that removes every trace of credswitch from a shell. */
 export function clearedEnv(): EnvOverrides {
   const env: EnvOverrides = {};
   for (const name of allManagedVars()) env[name] = null;
-  env.CREDCTX_CONTEXT = null;
-  env.CREDCTX_OVERRIDE = null;
-  env.CREDCTX_BOUND_DIR = null;
-  env.CREDCTX_HOOK_KEY = null;
+  env.CREDSWITCH_CONTEXT = null;
+  env.CREDSWITCH_OVERRIDE = null;
+  env.CREDSWITCH_BOUND_DIR = null;
+  env.CREDSWITCH_HOOK_KEY = null;
   return env;
 }
 

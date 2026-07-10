@@ -1,4 +1,4 @@
-# credctx
+# credswitch
 
 **One identity context per project — for every CLI and AI agent.**
 
@@ -21,7 +21,7 @@ Contexts are **fail-closed**. A provider you didn't put in the context is *denie
 ## Install
 
 ```sh
-npm install -g credctx
+npm install -g credswitch
 ```
 
 Requires Node 20+ (if you use Claude Code or Codex, you already have it). macOS and Linux; zsh and bash hooks.
@@ -72,7 +72,7 @@ Every command — and the shell hook — resolves the active context through one
 
 ```
 --context flag → pinned shell (csw shell) → nearest folder binding
-→ inherited from parent process (CREDCTX_CONTEXT) → global default (csw use) → none
+→ inherited from parent process (CREDSWITCH_CONTEXT) → global default (csw use) → none
 ```
 
 Applying a context does three things, in order:
@@ -81,7 +81,7 @@ Applying a context does three things, in order:
 2. **Denies every adapter the context omits.** Denied selectors point into a read-only directory, so the provider CLI sees empty state and cannot write any — an accidental `az login` inside a denied context fails instead of quietly creating a shared fallback identity.
 3. **Applies the context's accounts.** A `--system` account is the explicit way to say "this context uses the machine's default login" for that one provider.
 
-`inherited` is what makes agents composable: `csw run --context acme -- claude` exports `CREDCTX_CONTEXT=acme`, so when the agent itself calls `csw run -- az ...` anywhere on disk, it stays acme unless a folder binding says otherwise.
+`inherited` is what makes agents composable: `csw run --context acme -- claude` exports `CREDSWITCH_CONTEXT=acme`, so when the agent itself calls `csw run -- az ...` anywhere on disk, it stays acme unless a folder binding says otherwise.
 
 ## Adapters
 
@@ -118,12 +118,12 @@ That catches the classic consultant accident — an `az login` run in the wrong 
 ## Where things live
 
 ```
-~/.config/credctx/config.json    # the context map: names, paths, bindings, pins — no secrets
-~/.local/state/credctx/          # isolated provider state created by `account add`
-~/.local/state/credctx/denied/   # read-only; where denied providers point
+~/.config/credswitch/config.json    # the context map: names, paths, bindings, pins — no secrets
+~/.local/state/credswitch/          # isolated provider state created by `account add`
+~/.local/state/credswitch/denied/   # read-only; where denied providers point
 ```
 
-credctx never reads, writes, copies, or proxies credentials. It only decides **which** state each provider CLI sees, and lets the provider's own tooling do every login. Your repos contain nothing: bindings live in your home config, keyed by folder path. Config mutations take a lock, so concurrent agents can't lose each other's updates.
+credswitch never reads, writes, copies, or proxies credentials. It only decides **which** state each provider CLI sees, and lets the provider's own tooling do every login. Your repos contain nothing: bindings live in your home config, keyed by folder path. Config mutations take a lock, so concurrent agents can't lose each other's updates.
 
 `csw account remove` only edits config — it never deletes credential state, and tells you where the state lives so you can remove it yourself.
 
@@ -158,8 +158,8 @@ The zsh/bash hook is resolver-backed: it cannot disagree with `csw current`. It 
 ## How it compares
 
 - **direnv** switches env vars per folder, but you write the exports yourself, there's no identity model, no login flow, and no `doctor` to prove who you are.
-- **aws-vault / gcloud configurations / kubectl contexts** each solve one provider. credctx composes *across* providers — one context = the whole hat you're wearing.
-- **1Password shell plugins** are excellent if you want a vault in the loop. credctx is vault-agnostic and provider-native: your credentials stay exactly where `az login` and `gh auth login` put them.
+- **aws-vault / gcloud configurations / kubectl contexts** each solve one provider. credswitch composes *across* providers — one context = the whole hat you're wearing.
+- **1Password shell plugins** are excellent if you want a vault in the loop. credswitch is vault-agnostic and provider-native: your credentials stay exactly where `az login` and `gh auth login` put them.
 - None of them treat **AI agents as identities**. That's the point here.
 
 ## Safety notes (v0.2, honest edition)
@@ -167,7 +167,7 @@ The zsh/bash hook is resolver-backed: it cannot disagree with `csw current`. It 
 - Denied providers fail with provider-specific messages: `gh` and `kubectl` say not-logged-in cleanly; `gcloud` and `codex` complain about the unwritable/missing denied directory. Blunt, but closed — add the account (or a `--system` account) to the context to enable a provider.
 - The deny/clear guarantees apply *inside contexts* (`csw run`, pinned shells, hooked shells). A shell with no hook and no pin is whatever your machine is.
 - Codex's identity probe proves login state but not *which* account — its pin is a weak fingerprint. Azure, gcloud, GitHub, and Claude pins carry real identities.
-- Bindings are local to your machine (`~/.config/credctx`). Committed, in-repo context manifests are deliberately absent until they can ship with a trust model — a cloned repo must never silently select your production identity.
+- Bindings are local to your machine (`~/.config/credswitch`). Committed, in-repo context manifests are deliberately absent until they can ship with a trust model — a cloned repo must never silently select your production identity.
 - Windows: not yet. PowerShell hook and native-profile adapters (AWS) are next.
 
 ## Roadmap

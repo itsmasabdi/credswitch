@@ -9,20 +9,20 @@ import { shellQuote } from "./util.js";
  * All actual resolution happens in `csw env --cwd` (the real resolver), so the
  * hook can never disagree with `csw current`. If csw fails, the hook clears
  * every managed variable and warns — fail closed, never stale.
- * Shells pinned with `csw shell` (CREDCTX_OVERRIDE=1) are left alone.
+ * Shells pinned with `csw shell` (CREDSWITCH_OVERRIDE=1) are left alone.
  */
 
 function fallbackClear(): string {
-  const vars = [...allManagedVars(), "CREDCTX_CONTEXT", "CREDCTX_BOUND_DIR", "CREDCTX_HOOK_KEY"];
+  const vars = [...allManagedVars(), "CREDSWITCH_CONTEXT", "CREDSWITCH_BOUND_DIR", "CREDSWITCH_HOOK_KEY"];
   return `unset ${vars.join(" ")}`;
 }
 
 export function zshHook(): string {
   const list = shellQuote(bindingsListPath());
-  return `# credctx — automatic per-folder context switching (zsh)
+  return `# credswitch — automatic per-folder context switching (zsh)
 # Install: echo 'eval "$(csw hook zsh)"' >> ~/.zshrc
-_credctx_hook() {
-  [[ -n "$CREDCTX_OVERRIDE" ]] && return
+_credswitch_hook() {
+  [[ -n "$CREDSWITCH_OVERRIDE" ]] && return
   local list=${list}
   local pwdreal="\${PWD:A}" hit="" hitctx="" dir ctx key out
   if [[ -r "$list" ]]; then
@@ -34,27 +34,27 @@ _credctx_hook() {
     done < "$list"
   fi
   if [[ -n "$hit" ]]; then key="b:$hit:$hitctx"; else key="d"; fi
-  [[ "$key" == "$CREDCTX_HOOK_KEY" ]] && return
+  [[ "$key" == "$CREDSWITCH_HOOK_KEY" ]] && return
   if out="$(command csw env --cwd "$pwdreal" 2>/dev/null)"; then
     eval "$out"
-    export CREDCTX_HOOK_KEY="$key"
+    export CREDSWITCH_HOOK_KEY="$key"
   else
     eval ${shellQuote(fallbackClear())}
-    print -u2 "credctx: could not resolve a context for $pwdreal — cleared managed credentials (run 'csw doctor')"
+    print -u2 "credswitch: could not resolve a context for $pwdreal — cleared managed credentials (run 'csw doctor')"
   fi
 }
 autoload -Uz add-zsh-hook
-add-zsh-hook chpwd _credctx_hook
-_credctx_hook
+add-zsh-hook chpwd _credswitch_hook
+_credswitch_hook
 `;
 }
 
 export function bashHook(): string {
   const list = shellQuote(bindingsListPath());
-  return `# credctx — automatic per-folder context switching (bash)
+  return `# credswitch — automatic per-folder context switching (bash)
 # Install: echo 'eval "$(csw hook bash)"' >> ~/.bashrc
-_credctx_hook() {
-  [[ -n "$CREDCTX_OVERRIDE" ]] && return
+_credswitch_hook() {
+  [[ -n "$CREDSWITCH_OVERRIDE" ]] && return
   local list=${list}
   local pwdreal hit="" hitctx="" dir ctx key out
   pwdreal="$(pwd -P)"
@@ -67,19 +67,19 @@ _credctx_hook() {
     done < "$list"
   fi
   if [[ -n "$hit" ]]; then key="b:$hit:$hitctx"; else key="d"; fi
-  [[ "$key" == "$CREDCTX_HOOK_KEY" ]] && return
+  [[ "$key" == "$CREDSWITCH_HOOK_KEY" ]] && return
   if out="$(command csw env --cwd "$pwdreal" 2>/dev/null)"; then
     eval "$out"
-    export CREDCTX_HOOK_KEY="$key"
+    export CREDSWITCH_HOOK_KEY="$key"
   else
     eval ${shellQuote(fallbackClear())}
-    echo "credctx: could not resolve a context for $pwdreal — cleared managed credentials (run 'csw doctor')" >&2
+    echo "credswitch: could not resolve a context for $pwdreal — cleared managed credentials (run 'csw doctor')" >&2
   fi
 }
-if [[ -z "$_CREDCTX_HOOKED" ]]; then
-  _CREDCTX_HOOKED=1
-  PROMPT_COMMAND="_credctx_hook\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+if [[ -z "$_CREDSWITCH_HOOKED" ]]; then
+  _CREDSWITCH_HOOKED=1
+  PROMPT_COMMAND="_credswitch_hook\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 fi
-_credctx_hook
+_credswitch_hook
 `;
 }

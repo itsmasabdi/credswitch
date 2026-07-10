@@ -3,19 +3,19 @@ import path from "node:path";
 import { expandPath } from "./util.js";
 
 export function configPath(): string {
-  if (process.env.CREDCTX_CONFIG) return expandPath(process.env.CREDCTX_CONFIG);
+  if (process.env.CREDSWITCH_CONFIG) return expandPath(process.env.CREDSWITCH_CONFIG);
   const configHome = process.env.XDG_CONFIG_HOME
     ? expandPath(process.env.XDG_CONFIG_HOME)
     : path.join(os.homedir(), ".config");
-  return path.join(configHome, "credctx", "config.json");
+  return path.join(configHome, "credswitch", "config.json");
 }
 
 export function stateRoot(): string {
-  if (process.env.CREDCTX_STATE_HOME) return expandPath(process.env.CREDCTX_STATE_HOME);
+  if (process.env.CREDSWITCH_STATE_HOME) return expandPath(process.env.CREDSWITCH_STATE_HOME);
   const stateHome = process.env.XDG_STATE_HOME
     ? expandPath(process.env.XDG_STATE_HOME)
     : path.join(os.homedir(), ".local", "state");
-  return path.join(stateHome, "credctx");
+  return path.join(stateHome, "credswitch");
 }
 
 /** Plain-text list of bound directories, used by the shell hook's fast path. */
