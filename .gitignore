@@ -1,0 +1,25 @@
+# Build output
+dist/
+node_modules/
+*.tsbuildinfo
+
+# OS noise
+.DS_Store
+
+# Local config and secrets must never be committed.
+.env
+.env.*
+*.log
+*.token
+*.secret
+*.key
+*.pem
+auth.json
+
+# Provider auth/config directories are always external state.
+.azure/
+.claude/
+.codex/
+.config/
+.local/
+.kube/

@@ -1,0 +1,139 @@
+import fs from "node:fs";
+import path from "node:path";
+import { adapters, getAdapter, type AccountConfig } from "./adapters.js";
+import { bindingsListPath, configPath } from "./paths.js";
+import { atomicWrite, CliError } from "./util.js";
+
+export interface ContextConfig {
+  description?: string;
+  accounts: string[];
+}
+
+export interface Config {
+  version: 2;
+  defaultContext?: string;
+  accounts: Record<string, AccountConfig>;
+  contexts: Record<string, ContextConfig>;
+  bindings: Record<string, string>;
+}
+
+export const ACCOUNT_ID_RE = /^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const CONTEXT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function emptyConfig(): Config {
+  return { version: 2, accounts: {}, contexts: {}, bindings: {} };
+}
+
+export function configExists(): boolean {
+  return fs.existsSync(configPath());
+}
+
+export function loadConfig(): Config {
+  const target = configPath();
+  if (!fs.existsSync(target)) {
+    throw new CliError(`Missing config: ${target}\nRun 'csw init' to create one.`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(target, "utf8"));
+  } catch (error) {
+    throw new CliError(`Could not parse ${target}: ${(error as Error).message}`);
+  }
+
+  const config = normalize(parsed, target);
+  const errors = validateConfig(config);
+  if (errors.length > 0) {
+    throw new CliError(`Invalid config: ${target}\n  - ${errors.join("\n  - ")}`);
+  }
+  return config;
+}
+
+function normalize(parsed: unknown, target: string): Config {
+  if (!parsed || typeof parsed !== "object") {
+    throw new CliError(`Invalid config: ${target}\nExpected a JSON object.`);
+  }
+  const raw = parsed as Record<string, unknown>;
+  if (raw.version !== 2) {
+    throw new CliError(`Invalid config: ${target}\nExpected "version": 2.`);
+  }
+  return {
+    version: 2,
+    defaultContext: typeof raw.defaultContext === "string" ? raw.defaultContext : undefined,
+    accounts: (raw.accounts as Record<string, AccountConfig>) ?? {},
+    contexts: (raw.contexts as Record<string, ContextConfig>) ?? {},
+    bindings: (raw.bindings as Record<string, string>) ?? {}
+  };
+}
+
+export function validateConfig(config: Config): string[] {
+  const errors: string[] = [];
+
+  for (const [id, account] of Object.entries(config.accounts)) {
+    if (!ACCOUNT_ID_RE.test(id)) {
+      errors.push(`account id '${id}' must look like <adapter>:<name> (e.g. azure:work)`);
+      continue;
+    }
+    const prefix = id.split(":")[0];
+    if (!adapters[prefix]) {
+      errors.push(`account '${id}': unknown adapter '${prefix}'`);
+      continue;
+    }
+    if (account.adapter !== prefix) {
+      errors.push(`account '${id}': adapter field '${account.adapter}' does not match id prefix '${prefix}'`);
+      continue;
+    }
+    const issue = getAdapter(prefix).validateAccount(account);
+    if (issue) errors.push(`account '${id}': ${issue}`);
+  }
+
+  for (const [name, context] of Object.entries(config.contexts)) {
+    if (!CONTEXT_NAME_RE.test(name)) {
+      errors.push(`context name '${name}' contains invalid characters`);
+      continue;
+    }
+    if (!Array.isArray(context.accounts)) {
+      errors.push(`context '${name}': 'accounts' must be an array of account ids`);
+      continue;
+    }
+    const seenAdapters = new Map<string, string>();
+    for (const id of context.accounts) {
+      if (!config.accounts[id]) {
+        errors.push(`context '${name}': unknown account '${id}'`);
+        continue;
+      }
+      const adapter = id.split(":")[0];
+      const existing = seenAdapters.get(adapter);
+      if (existing) {
+        errors.push(`context '${name}': both '${existing}' and '${id}' use adapter '${adapter}' — one identity per adapter per context`);
+      }
+      seenAdapters.set(adapter, id);
+    }
+  }
+
+  for (const [dir, contextName] of Object.entries(config.bindings)) {
+    if (!path.isAbsolute(dir)) errors.push(`binding '${dir}': must be an absolute path`);
+    if (!config.contexts[contextName]) errors.push(`binding '${dir}': unknown context '${contextName}'`);
+  }
+
+  if (config.defaultContext && !config.contexts[config.defaultContext]) {
+    errors.push(`defaultContext '${config.defaultContext}' does not exist`);
+  }
+
+  return errors;
+}
+
+export function saveConfig(config: Config): void {
+  const errors = validateConfig(config);
+  if (errors.length > 0) {
+    throw new CliError(`Refusing to save invalid config:\n  - ${errors.join("\n  - ")}`);
+  }
+  atomicWrite(configPath(), `${JSON.stringify(config, null, 2)}\n`);
+  writeBindingsList(config);
+}
+
+/** Regenerate the plain-text bound-dirs list consumed by the shell hook. */
+export function writeBindingsList(config: Config): void {
+  const dirs = Object.keys(config.bindings).sort();
+  atomicWrite(bindingsListPath(), dirs.length > 0 ? `${dirs.join("\n")}\n` : "");
+}
