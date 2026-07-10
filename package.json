@@ -14,8 +14,8 @@
     "url": "https://github.com/itsmasabdi/agentctx/issues"
   },
   "bin": {
-    "csw": "./dist/src/cli.js",
-    "agentctx": "./dist/src/cli.js"
+    "csw": "dist/src/cli.js",
+    "agentctx": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
