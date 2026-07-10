@@ -18,7 +18,7 @@ import { adapterNames } from "./adapters.js";
 import { configPath, stateRoot } from "./paths.js";
 import { CliError, redactHome } from "./util.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 function printHelp(): void {
   console.log(`credswitch ${VERSION} — one identity context per project, for every CLI and AI agent.

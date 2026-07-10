@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-07-10
+
+Docs-only: README badges, sanitized examples, SECURITY.md and CHANGELOG
+added to the repo. No code changes.
+
 ## 0.2.0 — 2026-07-10
 
 First public release, published as `credswitch`.
