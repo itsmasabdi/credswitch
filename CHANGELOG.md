@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.1 — 2026-07-10
+
+Safety patch on the porcelain, from a pre-promotion review.
+
+- **`csw login` is now fully transactional**: context creation, binding,
+  default, account, and slot swap commit in ONE config write *after* login
+  and verification succeed. A cancelled login leaves no context, no binding,
+  no account — "Nothing was saved" is now literally true.
+- **"This folder" means this folder**: `csw login` only reuses a context
+  whose binding is the current directory itself. Under an ancestor's binding
+  (or just the global default) it creates a local override context — seeded
+  with everything that already applied there, with only the one adapter slot
+  swapped — instead of silently mutating a context shared with sibling
+  folders.
+- **Hook failure now fails closed**: if `csw env` errors, the fallback points
+  every selector at the read-only denied root (unsetting alone would have
+  re-enabled machine defaults) and clears token channels.
+- **Credential-channel inventory extended** (confirmed against provider
+  docs): claude `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX`; github `GH_ENTERPRISE_TOKEN`,
+  `GITHUB_ENTERPRISE_TOKEN`; gcloud `CLOUDSDK_AUTH_ACCESS_TOKEN`.
+- **Hook-cache race fixed**: the config carries a generation counter and
+  `csw env` stamps `CREDSWITCH_HOOK_KEY` with the generation of the config it
+  actually read, so a shell that catches the bindings list mid-write simply
+  re-asks at the next prompt instead of caching stale state.
+
 ## 0.3.0 — 2026-07-10
 
 The pyenv moment: a porcelain layer so the everyday workflow is two commands.

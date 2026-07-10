@@ -21,7 +21,7 @@ import { adapterNames } from "./adapters.js";
 import { configPath, stateRoot } from "./paths.js";
 import { CliError, redactHome } from "./util.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 function printHelp(): void {
   console.log(`credswitch ${VERSION} — every folder gets its own identity, for every CLI and AI agent.

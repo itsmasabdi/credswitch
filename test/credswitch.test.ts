@@ -151,19 +151,21 @@ test("omitted adapters are denied, token variables never leak", () => {
   ok(csw(f, ["context", "add", "solo", "claude:default"]), "solo ctx");
 
   const probe =
-    'printf "%s|%s|%s|%s|%s" "${AZURE_CONFIG_DIR:-unset}" "${GH_TOKEN:-unset}" "${ANTHROPIC_API_KEY:-unset}" "${CLAUDE_CONFIG_DIR:-unset}" "$CREDSWITCH_CONTEXT"';
+    'printf "%s|%s|%s|%s|%s|%s|%s" "${AZURE_CONFIG_DIR:-unset}" "${GH_TOKEN:-unset}" "${ANTHROPIC_API_KEY:-unset}" "${CLAUDE_CONFIG_DIR:-unset}" "${GH_ENTERPRISE_TOKEN:-unset}" "${CLOUDSDK_AUTH_ACCESS_TOKEN:-unset}" "$CREDSWITCH_CONTEXT"';
   const result = csw(f, ["run", "-c", "solo", "--", "sh", "-c", probe], {
     env: {
       AZURE_CONFIG_DIR: "/leaky/azure",
       GH_TOKEN: "leaky-token",
       ANTHROPIC_API_KEY: "sk-leaky",
-      CLAUDE_CONFIG_DIR: "/leaky/claude"
+      CLAUDE_CONFIG_DIR: "/leaky/claude",
+      GH_ENTERPRISE_TOKEN: "leaky-ent",
+      CLOUDSDK_AUTH_ACCESS_TOKEN: "leaky-gcp"
     }
   });
   ok(result, "hygiene run");
   const deniedAzure = path.join(f.state, "denied", "azure");
-  // azure: denied selector; gh/anthropic tokens: cleared; claude: system default (unset)
-  assert.equal(result.stdout, `${deniedAzure}|unset|unset|unset|solo`);
+  // azure: denied selector; token channels: cleared; claude: system default (unset)
+  assert.equal(result.stdout, `${deniedAzure}|unset|unset|unset|unset|unset|solo`);
 
   // The denied provider actually fails closed, and the denied root is unwritable.
   const denied = csw(f, ["run", "-c", "solo", "--", "az", "account", "show"]);
@@ -494,7 +496,10 @@ test("hook output is resolver-backed with a fail-closed fallback", () => {
   assert.match(zsh.stdout, /add-zsh-hook precmd _credswitch_hook/);
   assert.match(zsh.stdout, /#gen/);
   assert.match(zsh.stdout, /csw env --cwd/);
-  assert.match(zsh.stdout, /unset .*AZURE_CONFIG_DIR/);
+  // failure fallback DENIES (selectors point at the denied root) rather than clearing
+  assert.ok(zsh.stdout.includes("export AZURE_CONFIG_DIR="), "fallback must export the selector");
+  assert.ok(zsh.stdout.includes("denied/azure"), "fallback selector must point at the denied root");
+  assert.match(zsh.stdout, /unset .*GH_TOKEN/);
   assert.ok(zsh.stdout.includes("bindings.list"));
 
   const bash = csw(f, ["hook", "bash"]);
@@ -648,6 +653,85 @@ test("csw login --global targets (or creates) the default context", () => {
   const config = JSON.parse(fs.readFileSync(f.configFile, "utf8"));
   assert.equal(config.defaultContext, "global");
   assert.deepEqual(config.bindings, {});
+});
+
+test("cancelled csw login saves nothing — no context, no binding, no account", () => {
+  const f = setup();
+  ok(csw(f, ["init"]), "init");
+  const project = path.join(f.home, "doomed-app");
+  fs.mkdirSync(project, { recursive: true });
+
+  const result = csw(f, ["login", "azure"], { cwd: project, env: { FAKE_AZ_LOGIN_FAIL: "1" } });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Nothing was saved/);
+
+  const config = JSON.parse(fs.readFileSync(f.configFile, "utf8"));
+  assert.deepEqual(config.contexts, {}, "no context may be created");
+  assert.deepEqual(config.bindings, {}, "no binding may be created");
+  assert.deepEqual(config.accounts, {}, "no account may be created");
+  assert.ok(!fs.existsSync(path.join(f.state, "azure", "doomed-app")), "fresh state dir removed");
+});
+
+test("csw login in a subfolder overrides locally, seeded from the inherited context", () => {
+  const f = setup();
+  seedTwoAccounts(f);
+  ok(csw(f, ["account", "add", "claude", "--system"]), "claude system");
+  ok(csw(f, ["context", "set", "ctx-alice", "azure:alice", "claude:default"]), "ctx-alice + claude");
+  const projectA = path.join(f.home, "proj-a");
+  const svc = path.join(projectA, "svc");
+  fs.mkdirSync(svc, { recursive: true });
+  ok(csw(f, ["bind", "ctx-alice", "--dir", projectA]), "bind parent");
+
+  const login = csw(f, ["login", "azure", "--as", "svc-bot"], { cwd: svc });
+  ok(login, "login in subfolder");
+  assert.match(login.stdout, /inheriting from ctx-alice \(bound at /);
+
+  const config = JSON.parse(fs.readFileSync(f.configFile, "utf8"));
+  // parent context untouched — siblings keep their credentials
+  assert.deepEqual(config.contexts["ctx-alice"].accounts, ["azure:alice", "claude:default"]);
+  // override context: seeded accounts with only the azure slot swapped
+  assert.deepEqual(config.contexts["svc"].accounts, ["azure:svc-bot", "claude:default"]);
+  assert.equal(config.bindings[svc], "svc");
+});
+
+test("csw login in an unbound folder seeds from the global default", () => {
+  const f = setup();
+  seedTwoAccounts(f);
+  ok(csw(f, ["account", "add", "claude", "--system"]), "claude system");
+  ok(csw(f, ["context", "set", "ctx-bob", "azure:bob", "claude:default"]), "ctx-bob + claude");
+  ok(csw(f, ["use", "ctx-bob"]), "use");
+  const project = path.join(f.home, "fresh-proj");
+  fs.mkdirSync(project, { recursive: true });
+
+  const login = csw(f, ["login", "azure", "--as", "fresh-proj"], { cwd: project });
+  ok(login, "login unbound");
+  assert.match(login.stdout, /inheriting from ctx-bob \(global default\)/);
+
+  const config = JSON.parse(fs.readFileSync(f.configFile, "utf8"));
+  assert.deepEqual(config.contexts["fresh-proj"].accounts, ["azure:fresh-proj", "claude:default"]);
+  assert.deepEqual(config.contexts["ctx-bob"].accounts, ["azure:bob", "claude:default"], "default untouched");
+});
+
+test("env --cwd stamps the hook key with the config generation", () => {
+  const f = setup();
+  seedTwoAccounts(f);
+  const projectA = path.join(f.home, "proj-a");
+  fs.mkdirSync(projectA, { recursive: true });
+  ok(csw(f, ["bind", "ctx-alice", "--dir", projectA]), "bind");
+
+  const bound = csw(f, ["env", "--cwd", projectA]);
+  ok(bound, "env bound");
+  assert.match(bound.stdout, /export CREDSWITCH_HOOK_KEY='\d+\|b:/);
+
+  ok(csw(f, ["use", "ctx-bob"]), "use");
+  const unbound = csw(f, ["env", "--cwd", f.home]);
+  assert.match(unbound.stdout, /export CREDSWITCH_HOOK_KEY='\d+\|d'/);
+
+  const listGen = fs
+    .readFileSync(path.join(path.dirname(f.configFile), "bindings.list"), "utf8")
+    .split("\n")[0]
+    .split("\t")[1];
+  assert.match(unbound.stdout, new RegExp(`export CREDSWITCH_HOOK_KEY='${listGen}\\|d'`), "key gen matches list gen");
 });
 
 test("csw setup installs the shell hook idempotently", () => {

@@ -658,7 +658,9 @@ export function cmdEnv(args: string[]): void {
 
   // No config at all isn't a failure for the hook — it's "nothing configured".
   if (!configExists()) {
-    for (const line of shellLines(clearedEnv())) console.log(line);
+    const env = clearedEnv();
+    env.CREDSWITCH_HOOK_KEY = "|d"; // matches the hook's key when no list is readable
+    for (const line of shellLines(env)) console.log(line);
     return;
   }
 
@@ -666,14 +668,23 @@ export function cmdEnv(args: string[]): void {
   // Location-only resolution: an empty env excludes pins and inherited contexts.
   const res = resolveContext(config, { env: {}, cwd: cwdOpt });
 
+  // The key carries the gen of the config we ACTUALLY read. If the bindings
+  // list was momentarily ahead (list is written first), the stamped key won't
+  // match the hook's computed key, so the hook simply asks again next prompt.
+  const gen = config.gen ?? 0;
+
   if (!res.name) {
-    for (const line of shellLines(clearedEnv())) console.log(line);
+    const env = clearedEnv();
+    env.CREDSWITCH_HOOK_KEY = `${gen}|d`;
+    for (const line of shellLines(env)) console.log(line);
     return;
   }
 
   const env = envForContext(config, res.name);
   env.CREDSWITCH_BOUND_DIR = res.bindingDir ?? null;
   env.CREDSWITCH_OVERRIDE = null;
+  env.CREDSWITCH_HOOK_KEY =
+    res.source === "binding" ? `${gen}|b:${res.bindingDir}:${res.name}` : `${gen}|d`;
   for (const line of shellLines(env)) console.log(line);
 }
 
@@ -858,34 +869,41 @@ export function cmdLogin(args: string[]): void {
 
   ensureConfig();
   const dir = realpathSafe(process.cwd());
-  let config = loadConfig();
+  const config = loadConfig();
 
-  // 1. Target context: the folder's binding, or an implicit one created now.
-  //    A folder only ever gains an identity through this explicit act of
-  //    logging in inside it — never through anything a repo ships.
+  // 1. DECIDE the target context — nothing is written until step 5, so a
+  //    cancelled login truly saves nothing. A folder only ever gains an
+  //    identity through this explicit act of logging in inside it — never
+  //    through anything a repo ships.
   let contextName: string;
+  let bindDir: string | undefined;
+  let setDefault = false;
+  let seedAccounts: string[] = [];
+  let inheritedFrom: string | undefined;
+
   if (opts.global) {
     contextName = config.defaultContext ?? "global";
-    if (!config.defaultContext) {
-      config = mutateConfig((c) => {
-        if (!c.contexts[contextName]) c.contexts[contextName] = { accounts: [] };
-        c.defaultContext = contextName;
-      });
-      console.log(`Created global default context '${contextName}'.`);
-    }
+    setDefault = !config.defaultContext;
   } else {
     const res = resolveContext(config, { env: {}, cwd: dir });
-    if (res.source === "binding") {
+    if (res.source === "binding" && res.bindingDir === dir) {
+      // Only an EXACT binding means "this folder's context". An ancestor's
+      // binding is shared with sibling folders — mutating it here could
+      // change their credentials, so we create a local override instead.
       contextName = res.name!;
     } else {
       forbidBroadDir(dir);
       contextName = contextNameForDir(config, dir);
-      const created = contextName;
-      config = mutateConfig((c) => {
-        if (!c.contexts[created]) c.contexts[created] = { accounts: [] };
-        c.bindings[dir] = created;
-      });
-      console.log(`${redactHome(dir)} → ${contextName} (new context, bound to this folder)`);
+      bindDir = dir;
+      if (res.name && config.contexts[res.name]) {
+        // Seed the new context with everything that already applies here, so
+        // the override only changes this one adapter — no surprise denials.
+        seedAccounts = [...config.contexts[res.name].accounts];
+        inheritedFrom =
+          res.source === "binding"
+            ? `${res.name} (bound at ${redactHome(res.bindingDir!)})`
+            : `${res.name} (global default)`;
+      }
     }
   }
 
@@ -959,10 +977,15 @@ export function cmdLogin(args: string[]): void {
     }
   }
 
-  // 5. Save the account and swap it into the context's slot for this adapter.
+  // 5. Single atomic commit: context, default, binding, account, slot swap.
+  //    Everything before this point only touched isolated state dirs.
   let replaced: string | undefined;
   mutateConfig((c) => {
-    if (!c.contexts[contextName]) c.contexts[contextName] = { accounts: [] };
+    if (!c.contexts[contextName]) {
+      c.contexts[contextName] = { accounts: seedAccounts.filter((seeded) => c.accounts[seeded]) };
+    }
+    if (setDefault && !c.defaultContext) c.defaultContext = contextName;
+    if (bindDir) c.bindings[bindDir] = contextName;
     c.accounts[id] = account!;
     const ctx = c.contexts[contextName];
     const slot = ctx.accounts.findIndex((a) => a !== id && c.accounts[a]?.adapter === adapter.name);
@@ -974,6 +997,12 @@ export function cmdLogin(args: string[]): void {
     }
   });
 
+  if (setDefault) console.log(`Created global default context '${contextName}'.`);
+  if (bindDir) {
+    console.log(
+      `${redactHome(bindDir)} → ${contextName} (new context${inheritedFrom ? `, inheriting from ${inheritedFrom}` : ""}, bound to this folder)`
+    );
+  }
   console.log(`Context '${contextName}': ${adapter.name} → ${id}${replaced ? ` (replaced ${replaced})` : ""}`);
   if (hookActiveHere()) console.log("Active from your next prompt.");
   else {

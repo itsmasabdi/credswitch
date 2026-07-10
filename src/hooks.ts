@@ -1,5 +1,5 @@
-import { allManagedVars } from "./env.js";
-import { bindingsListPath } from "./paths.js";
+import { adapters } from "./adapters.js";
+import { bindingsListPath, deniedRoot } from "./paths.js";
 import { shellQuote } from "./util.js";
 
 /**
@@ -14,9 +14,23 @@ import { shellQuote } from "./util.js";
  * Shells pinned with `csw shell` (CREDSWITCH_OVERRIDE=1) are left alone.
  */
 
-function fallbackClear(): string {
-  const vars = [...allManagedVars(), "CREDSWITCH_CONTEXT", "CREDSWITCH_BOUND_DIR", "CREDSWITCH_HOOK_KEY"];
-  return `unset ${vars.join(" ")}`;
+/**
+ * When `csw env` itself fails, fail CLOSED: point every selector at the
+ * read-only denied root (machine defaults stay unreachable) and clear the
+ * token channels. Unsetting alone would fail open.
+ */
+function fallbackDeny(): string {
+  const root = deniedRoot();
+  const exports: string[] = [];
+  const unsets = new Set<string>(["CREDSWITCH_CONTEXT", "CREDSWITCH_BOUND_DIR", "CREDSWITCH_HOOK_KEY"]);
+  for (const adapter of Object.values(adapters)) {
+    const denied = adapter.deniedEnv(root);
+    for (const [key, value] of Object.entries(denied)) exports.push(`export ${key}=${shellQuote(value)}`);
+    for (const key of adapter.managedEnv) {
+      if (!(key in denied)) unsets.add(key);
+    }
+  }
+  return [...exports.sort(), `unset ${[...unsets].sort().join(" ")}`].join("; ");
 }
 
 export function zshHook(): string {
@@ -41,10 +55,9 @@ _credswitch_hook() {
   [[ "$key" == "$CREDSWITCH_HOOK_KEY" ]] && return
   if out="$(command csw env --cwd "$pwdreal" 2>/dev/null)"; then
     eval "$out"
-    export CREDSWITCH_HOOK_KEY="$key"
   else
-    eval ${shellQuote(fallbackClear())}
-    print -u2 "credswitch: could not resolve a context for $pwdreal — cleared managed credentials (run 'csw doctor')"
+    eval ${shellQuote(fallbackDeny())}
+    print -u2 "credswitch: could not resolve a context for $pwdreal — denied all providers (run 'csw doctor')"
   fi
 }
 autoload -Uz add-zsh-hook
@@ -76,10 +89,9 @@ _credswitch_hook() {
   [[ "$key" == "$CREDSWITCH_HOOK_KEY" ]] && return
   if out="$(command csw env --cwd "$pwdreal" 2>/dev/null)"; then
     eval "$out"
-    export CREDSWITCH_HOOK_KEY="$key"
   else
-    eval ${shellQuote(fallbackClear())}
-    echo "credswitch: could not resolve a context for $pwdreal — cleared managed credentials (run 'csw doctor')" >&2
+    eval ${shellQuote(fallbackDeny())}
+    echo "credswitch: could not resolve a context for $pwdreal — denied all providers (run 'csw doctor')" >&2
   fi
 }
 if [[ -z "$_CREDSWITCH_HOOKED" ]]; then
