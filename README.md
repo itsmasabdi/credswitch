@@ -105,6 +105,17 @@ Applying a context does three things, in order:
 | `codex` | `CODEX_HOME` | `OPENAI_API_KEY` |
 | `kubernetes` | `KUBECONFIG` | — (also honored by helm, k9s, …) |
 
+Codex profiles also persist an absolute source path for the app-owned
+`openai-bundled` marketplace. When an isolated Codex account is activated,
+credswitch verifies that this reserved local source lives under the active
+`CODEX_HOME` and atomically rebases it if it still points at another profile
+(commonly `~/.codex/.tmp`). This keeps bundled Browser/Chrome plugins aligned
+with ChatGPT app updates. `csw setup` repairs every configured Codex account,
+and `csw doctor` reports the repair. Only that marketplace source line is
+changed; credentials, other marketplaces, plugin choices, and caches are left
+alone. Ambiguous or non-local marketplace configurations are not rewritten and
+are flagged by `csw doctor`.
+
 Verified on macOS: a redirected `CLAUDE_CONFIG_DIR` fully isolates Claude Code from the Keychain-bound default login (`authMethod: none` when denied).
 
 Three ways to create an account:

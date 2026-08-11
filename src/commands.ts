@@ -13,6 +13,10 @@ import {
   type Config
 } from "./config.js";
 import {
+  repairCodexAccountMarketplace,
+  repairCodexContextMarketplaces
+} from "./codex-state.js";
+import {
   allManagedVars,
   applyEnv,
   clearedEnv,
@@ -79,6 +83,7 @@ export function cmdAccount(args: string[]): void {
 }
 
 function loginEnvFor(account: AccountConfig): EnvOverrides {
+  repairCodexAccountMarketplace(account);
   const overrides: EnvOverrides = {};
   for (const name of allManagedVars()) overrides[name] = null;
   if (!account.system) Object.assign(overrides, getAdapter(account.adapter).envFor(account));
@@ -189,6 +194,7 @@ function accountAdd(args: string[]): void {
     }
   }
 
+  repairCodexAccountMarketplace(account);
   if (adapter.identity && cliInstalled(adapter.cli)) {
     const identity = runIdentity(account);
     if (identity.ok) {
@@ -330,6 +336,7 @@ function accountLogin(args: string[]): void {
     throw new CliError(`Login failed or was cancelled (exit ${result.status ?? "unknown"}).`);
   }
 
+  repairCodexAccountMarketplace(account);
   const identity = runIdentity(account);
   if (identity.ok) {
     mutateConfig((c) => {
@@ -524,6 +531,7 @@ export function cmdCurrent(args: string[]): void {
   if (pos.length > 0) throw new CliError("Usage: csw current [--explain]");
   const config = loadConfig();
   const res = resolveContext(config, { env: process.env, cwd: process.cwd() });
+  if (res.name) repairCodexContextMarketplaces(config, res.name);
 
   if (!opts.explain) {
     console.log(res.name ?? "(none)");
@@ -737,6 +745,20 @@ export function cmdDoctor(args: string[]): void {
         }
       }
 
+      if (account.adapter === "codex" && !account.system && account.stateDir) {
+        const marketplace = repairCodexAccountMarketplace(account);
+        if (marketplace?.kind === "repaired") {
+          console.log(
+            `  ok ${id} bundled marketplace: repaired ${redactHome(marketplace.previousSource)} → ${redactHome(marketplace.expectedSource)}`
+          );
+        } else if (marketplace?.kind === "aligned") {
+          console.log(`  ok ${id} bundled marketplace: ${redactHome(marketplace.expectedSource)}`);
+        } else if (marketplace?.kind === "unsupported") {
+          failed = true;
+          console.log(`  !  ${id} bundled marketplace: ${marketplace.reason}`);
+        }
+      }
+
       if (!cliInstalled(adapter.cli)) {
         failed = true;
         console.log(`  !  ${id}: '${adapter.cli}' is not installed`);
@@ -934,6 +956,8 @@ export function cmdLogin(args: string[]): void {
     account = { adapter: adapter.name, stateDir };
   }
 
+  repairCodexAccountMarketplace(account);
+
   // 3. Log in when needed: always for fresh state; for an existing account
   //    only when its identity check fails. `csw account login` forces re-auth.
   let needLogin = Boolean(createdFreshDir);
@@ -958,6 +982,7 @@ export function cmdLogin(args: string[]): void {
       if (createdFreshDir) fs.rmSync(createdFreshDir, { recursive: true, force: true });
       throw new CliError(`Login failed or was cancelled (exit ${result.status ?? "unknown"}). Nothing was saved.`);
     }
+    repairCodexAccountMarketplace(account);
   }
 
   // 4. Pin the identity; warn if it duplicates another account of this adapter
@@ -1017,6 +1042,16 @@ export function cmdSetup(args: string[]): void {
 
   ensureConfig();
   console.log(`Config: ${redactHome(configPath())}`);
+
+  const config = loadConfig();
+  for (const [id, account] of Object.entries(config.accounts)) {
+    const marketplace = repairCodexAccountMarketplace(account);
+    if (marketplace?.kind === "repaired") {
+      console.log(
+        `Repaired ${id} bundled marketplace: ${redactHome(marketplace.previousSource)} → ${redactHome(marketplace.expectedSource)}`
+      );
+    }
+  }
 
   const shell = (opts.shell as string | undefined) ?? (process.env.SHELL?.endsWith("bash") ? "bash" : "zsh");
   if (shell !== "zsh" && shell !== "bash") throw new CliError("Supported shells: zsh, bash");

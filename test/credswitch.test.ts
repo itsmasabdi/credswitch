@@ -39,6 +39,17 @@ fi
 exit 1
 `;
 
+const FAKE_CODEX = `#!/bin/sh
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+  echo "Logged in using ChatGPT"
+  exit 0
+fi
+if [ "$1" = "login" ]; then
+  exit 0
+fi
+exit 1
+`;
+
 interface Fixture {
   tmp: string;
   home: string;
@@ -58,6 +69,7 @@ function setup(): Fixture {
 
   fs.writeFileSync(path.join(bin, "az"), FAKE_AZ, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "gh"), FAKE_GH, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "codex"), FAKE_CODEX, { mode: 0o755 });
   // csw shim so the shell hook can call back into the CLI under test
   fs.writeFileSync(path.join(bin, "csw"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, {
     mode: 0o755
@@ -107,6 +119,18 @@ function seedTwoAccounts(f: Fixture) {
   ok(csw(f, ["account", "add", "azure", "--name", "bob", "--path", bobDir]), "add bob");
   ok(csw(f, ["context", "add", "ctx-alice", "azure:alice"]), "ctx-alice");
   ok(csw(f, ["context", "add", "ctx-bob", "azure:bob"]), "ctx-bob");
+}
+
+function seedCodexAccount(f: Fixture): { codexHome: string; project: string } {
+  ok(csw(f, ["init"]), "init");
+  const codexHome = path.join(f.state, "codex-profile");
+  const project = path.join(f.home, "codex-project");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  ok(csw(f, ["account", "add", "codex", "--name", "app", "--path", codexHome]), "add codex");
+  ok(csw(f, ["context", "add", "codex-app", "codex:app"]), "codex context");
+  ok(csw(f, ["bind", "codex-app", "--dir", project]), "bind codex context");
+  return { codexHome, project };
 }
 
 test("help prints usage", () => {
@@ -364,6 +388,99 @@ test("env --cwd resolves bindings and default through the real resolver", () => 
   const cleared = csw(fresh, ["env", "--cwd", fresh.home]);
   ok(cleared, "env cleared");
   assert.match(cleared.stdout, /unset CREDSWITCH_CONTEXT/);
+});
+
+test("activating an isolated Codex profile rebases only its bundled marketplace source", () => {
+  const f = setup();
+  const { codexHome, project } = seedCodexAccount(f);
+  const staleSource = path.join(f.home, ".codex", ".tmp", "bundled-marketplaces", "openai-bundled");
+  const expectedSource = path.join(codexHome, ".tmp", "bundled-marketplaces", "openai-bundled");
+  const configFile = path.join(codexHome, "config.toml");
+  const before = `model = "gpt-test"
+
+[marketplaces.openai-primary-runtime]
+name = "openai-primary-runtime"
+source_type = "local"
+source = "/opt/shared/primary-runtime"
+
+[marketplaces.openai-bundled] # managed by the app
+name = "openai-bundled"
+source_type = "local"
+source = ${JSON.stringify(staleSource)} # keep this comment
+
+[plugins."personal@example"]
+enabled = true
+`;
+  fs.writeFileSync(configFile, before, { mode: 0o640 });
+
+  // `env --cwd` is the path used by the zsh/bash hook before launching Codex.
+  const activated = csw(f, ["env", "--cwd", project]);
+  ok(activated, "activate codex context");
+  assert.ok(activated.stdout.includes(`export CODEX_HOME='${codexHome}'`));
+
+  const after = fs.readFileSync(configFile, "utf8");
+  assert.equal(
+    after,
+    before.replace(
+      `source = ${JSON.stringify(staleSource)} # keep this comment`,
+      `source = ${JSON.stringify(expectedSource)} # keep this comment`
+    )
+  );
+  assert.match(after, /source = "\/opt\/shared\/primary-runtime"/, "other marketplaces must be preserved");
+  assert.match(after, /\[plugins\."personal@example"\]\nenabled = true/, "plugin choices must be preserved");
+  assert.equal(fs.statSync(configFile).mode & 0o777, 0o640, "config mode must be preserved");
+  assert.ok(!fs.existsSync(`${configFile}.credswitch-marketplace.lock`), "repair lock must be released");
+
+  const repaired = after;
+  ok(csw(f, ["env", "--cwd", project]), "activate already-repaired context");
+  assert.equal(fs.readFileSync(configFile, "utf8"), repaired, "aligned config must be idempotent");
+});
+
+test("setup and doctor report Codex bundled-marketplace repairs", () => {
+  const f = setup();
+  const { codexHome } = seedCodexAccount(f);
+  const configFile = path.join(codexHome, "config.toml");
+  const staleSource = path.join(f.home, ".codex", ".tmp", "bundled-marketplaces", "openai-bundled");
+  const expectedSource = path.join(codexHome, ".tmp", "bundled-marketplaces", "openai-bundled");
+  const staleConfig = `[marketplaces.openai-bundled]
+name = "openai-bundled"
+source_type = "local"
+source = ${JSON.stringify(staleSource)}
+`;
+
+  fs.writeFileSync(configFile, staleConfig);
+  const setupResult = csw(f, ["setup", "--shell", "zsh"]);
+  ok(setupResult, "setup repairs codex profile");
+  assert.match(setupResult.stdout, /Repaired codex:app bundled marketplace:/);
+  assert.ok(fs.readFileSync(configFile, "utf8").includes(JSON.stringify(expectedSource)));
+
+  fs.writeFileSync(configFile, staleConfig);
+  const doctor = csw(f, ["doctor", "codex-app"]);
+  ok(doctor, "doctor repairs codex profile");
+  assert.match(doctor.stdout, /ok codex:app bundled marketplace: repaired/);
+  assert.match(doctor.stdout, /All checks passed/);
+  assert.ok(fs.readFileSync(configFile, "utf8").includes(JSON.stringify(expectedSource)));
+});
+
+test("Codex marketplace repair leaves ambiguous or non-local sections unchanged", () => {
+  const f = setup();
+  const { codexHome, project } = seedCodexAccount(f);
+  const configFile = path.join(codexHome, "config.toml");
+  const config = `[marketplaces.openai-bundled]
+name = "openai-bundled"
+source_type = "git"
+source = "https://example.invalid/custom-bundle.git"
+`;
+  fs.writeFileSync(configFile, config);
+
+  const current = csw(f, ["current"], { cwd: project });
+  ok(current, "current with custom marketplace");
+  assert.equal(fs.readFileSync(configFile, "utf8"), config, "non-local source must not be rewritten");
+
+  const doctor = csw(f, ["doctor", "codex-app"]);
+  assert.equal(doctor.status, 2);
+  assert.match(doctor.stdout, /bundled marketplace: openai-bundled is not a single local marketplace source/);
+  assert.equal(fs.readFileSync(configFile, "utf8"), config);
 });
 
 test("one identity per adapter per context is enforced", () => {

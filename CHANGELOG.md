@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Isolated Codex profiles now self-heal a stale app-owned
+  `openai-bundled` marketplace source whenever the profile is activated. This
+  prevents alternate `CODEX_HOME` accounts from retaining Browser/Chrome
+  plugin builds from another profile after a ChatGPT app update.
+- `csw setup` repairs all configured Codex accounts and `csw doctor` reports
+  marketplace alignment or repair. The targeted edit preserves credentials,
+  other marketplaces, plugin selections, file mode, comments, and surrounding
+  TOML; ambiguous or non-local sources are left unchanged and diagnosed.
+
 ## 0.3.2 — 2026-07-13
 
 - **Shell startup now fails closed when `csw` is missing**: hooks installed by
