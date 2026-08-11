@@ -179,6 +179,17 @@ test("help prints usage", () => {
   assert.match(result.stdout, /DENIED/);
 });
 
+test("the reported version tracks package.json", () => {
+  const f = setup();
+  const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8"));
+  const result = csw(f, ["help"]);
+  ok(result, "help");
+  assert.ok(
+    result.stdout.startsWith(`credswitch ${manifest.version} `),
+    `help reported a different version than package.json (${manifest.version}):\n${result.stdout.split("\n")[0]}`
+  );
+});
+
 test("init creates config and refuses to clobber", () => {
   const f = setup();
   ok(csw(f, ["init"]), "init");

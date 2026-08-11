@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import {
   cmdAccount,
   cmdBind,
@@ -21,7 +22,22 @@ import { adapterNames } from "./adapters.js";
 import { configPath, stateRoot } from "./paths.js";
 import { CliError, redactHome } from "./util.js";
 
-const VERSION = "0.3.2";
+/**
+ * Read from the manifest rather than duplicated here: a hardcoded copy silently
+ * drifts from the published version on the first release that forgets to bump
+ * both. dist/src/cli.js sits two levels under the package root in the repo and
+ * in an install alike.
+ */
+function version(): string {
+  try {
+    const manifest = fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8");
+    return JSON.parse(manifest).version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+const VERSION = version();
 
 function printHelp(): void {
   console.log(`credswitch ${VERSION} — every folder gets its own identity, for every CLI and AI agent.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-08-11
+
+- `csw --help` reported 0.3.2 on the 0.4.0 release: the version was hardcoded
+  in `cli.ts` as well as `package.json`, and only the manifest was bumped. The
+  CLI now reads its version from the manifest, and a test asserts the two
+  agree, so the copies can no longer drift.
+
 ## 0.4.0 — 2026-08-11
 
 - **New `aws` adapter.** AWS has no single config-directory variable, so the
