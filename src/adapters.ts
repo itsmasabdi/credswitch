@@ -1,6 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { stateRoot } from "./paths.js";
-import { CliError, expandPath } from "./util.js";
+import { CliError, ensureDir, expandPath } from "./util.js";
 
 export interface AccountConfig {
   adapter: string;
@@ -42,6 +44,12 @@ export interface Adapter {
   envFor(account: AccountConfig): Record<string, string | null>;
   /** Where `account add` creates fresh isolated state. */
   freshStateDir?(accountName: string): string;
+  /**
+   * Idempotently create any structure the provider expects to already exist
+   * inside the state directory. Runs before login and identity checks, for
+   * both fresh and `--path` accounts.
+   */
+  prepareStateDir?(account: AccountConfig): void;
   /** Native login command to run inside the account's environment. */
   loginCommand?(account: AccountConfig): string[];
   identity?(account: AccountConfig): IdentitySpec;
@@ -58,6 +66,100 @@ function validateStateDirAccount(account: AccountConfig): string | null {
 function firstLine(text: string): string {
   return text.split("\n").map((l) => l.trim()).filter(Boolean)[0] ?? "";
 }
+
+/** Set by any profile that authenticates through IAM Identity Center. */
+const SSO_PROFILE_KEY = /^\s*(?:sso_session|sso_start_url)\s*=/m;
+
+function awsConfigFile(account: AccountConfig): string {
+  return account.system
+    ? path.join(os.homedir(), ".aws", "config")
+    : path.join(expandPath(account.stateDir!), "config");
+}
+
+/**
+ * Identity Center profiles re-auth with `aws sso login`; console sessions —
+ * and a brand-new empty state directory — use `aws login`.
+ */
+function usesSso(account: AccountConfig): boolean {
+  try {
+    return SSO_PROFILE_KEY.test(fs.readFileSync(awsConfigFile(account), "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * AWS has no single config-directory variable, so isolation redirects all
+ * three writable channels the CLI owns: both profile files and the `aws login`
+ * credential cache. Region variables are deliberately unmanaged — they carry
+ * no credential, and clearing them would break unrelated tooling.
+ *
+ * Known gap: the Identity Center token cache (`~/.aws/sso/cache`) has no
+ * override and stays machine-wide. Entries there are keyed by session, so
+ * accounts never collide, but those tokens are not per-context.
+ */
+const aws: Adapter = {
+  name: "aws",
+  label: "AWS CLI",
+  cli: "aws",
+  managedEnv: [
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_LOGIN_CACHE_DIRECTORY",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_CREDENTIAL_EXPIRATION",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_EC2_METADATA_DISABLED"
+  ],
+  deniedEnv: (root) => ({
+    AWS_CONFIG_FILE: path.join(root, "aws", "config"),
+    AWS_SHARED_CREDENTIALS_FILE: path.join(root, "aws", "credentials"),
+    AWS_LOGIN_CACHE_DIRECTORY: path.join(root, "aws", "login-cache"),
+    // Without this, a denied context on an EC2 host would fall through to the
+    // instance role — exactly the machine default that denial exists to block.
+    AWS_EC2_METADATA_DISABLED: "true"
+  }),
+  validateAccount: validateStateDirAccount,
+  envFor: (a) => {
+    const dir = expandPath(a.stateDir!);
+    return {
+      AWS_CONFIG_FILE: path.join(dir, "config"),
+      AWS_SHARED_CREDENTIALS_FILE: path.join(dir, "credentials"),
+      AWS_LOGIN_CACHE_DIRECTORY: path.join(dir, "login-cache")
+    };
+  },
+  freshStateDir: (name) => path.join(stateRoot(), "aws", name),
+  prepareStateDir(account) {
+    if (account.system || !account.stateDir) return;
+    // `aws login` writes into the cache directory but will not create it.
+    ensureDir(path.join(expandPath(account.stateDir), "login-cache"));
+  },
+  loginCommand: (a) => (usesSso(a) ? ["aws", "sso", "login"] : ["aws", "login"]),
+  identity: () => ({
+    argv: ["aws", "sts", "get-caller-identity", "--output", "json"],
+    parse(stdout, stderr, status) {
+      if (status !== 0) return { ok: false, summary: firstLine(stderr) || `aws exited with status ${status}` };
+      try {
+        const caller = JSON.parse(stdout);
+        if (!caller.Arn) return { ok: false, summary: "aws returned no caller ARN" };
+        return { ok: true, summary: caller.Arn };
+      } catch {
+        return { ok: false, summary: "aws returned invalid JSON" };
+      }
+    }
+  })
+};
 
 const azure: Adapter = {
   name: "azure",
@@ -201,6 +303,7 @@ const kubernetes: Adapter = {
 };
 
 export const adapters: Record<string, Adapter> = {
+  aws,
   azure,
   gcloud,
   github,

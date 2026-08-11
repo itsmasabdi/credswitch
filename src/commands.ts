@@ -175,6 +175,8 @@ function accountAdd(args: string[]): void {
     createdFreshDir = dir;
   }
 
+  adapter.prepareStateDir?.(account);
+
   // Login and verification happen BEFORE anything is saved: a cancelled or
   // failed login leaves no account, no context membership, no state dir.
   if (createdFreshDir && !opts.noLogin && adapter.loginCommand) {
@@ -324,6 +326,7 @@ function accountLogin(args: string[]): void {
   if (!adapter.loginCommand) {
     throw new CliError(`Adapter '${adapter.name}' has no login command — use the provider's own tooling.`);
   }
+  adapter.prepareStateDir?.(account);
   const argv = adapter.loginCommand(account);
   if (!cliInstalled(argv[0])) throw new CliError(`${argv[0]} is not installed (or not on PATH).`);
 
@@ -957,6 +960,7 @@ export function cmdLogin(args: string[]): void {
   }
 
   repairCodexAccountMarketplace(account);
+  adapter.prepareStateDir?.(account);
 
   // 3. Log in when needed: always for fresh state; for an existing account
   //    only when its identity check fails. `csw account login` forces re-auth.

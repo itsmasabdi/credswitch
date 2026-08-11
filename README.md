@@ -7,7 +7,7 @@
 
 **One identity context per project — for every CLI and AI agent.**
 
-`cd ~/clients/acme` and your Azure CLI, GitHub CLI, gcloud, kubectl, **Claude Code, and Codex** all switch to that client's accounts. Leave the folder and they switch back. Like a Python virtualenv, but for who you are.
+`cd ~/clients/acme` and your AWS CLI, Azure CLI, GitHub CLI, gcloud, kubectl, **Claude Code, and Codex** all switch to that client's accounts. Leave the folder and they switch back. Like a Python virtualenv, but for who you are.
 
 ```console
 $ cd ~/clients/acme
@@ -19,7 +19,7 @@ $ az account show --query user.name -o tsv
 you@outlook.com
 ```
 
-Built for the way work looks now: you don't just run cloud CLIs yourself — you launch an AI agent inside a project folder and *it* runs them. `csw run -- claude` hands the agent a complete, isolated identity bundle: the right Claude account, and the right Azure/GitHub/gcloud/kubectl credentials for every subprocess it spawns.
+Built for the way work looks now: you don't just run cloud CLIs yourself — you launch an AI agent inside a project folder and *it* runs them. `csw run -- claude` hands the agent a complete, isolated identity bundle: the right Claude account, and the right AWS/Azure/GitHub/gcloud/kubectl credentials for every subprocess it spawns.
 
 Contexts are **fail-closed**. A provider you didn't put in the context is *denied* — its CLI reports not-logged-in instead of silently acting as whoever your machine defaults to. Using the machine default is a decision you make explicitly, per context.
 
@@ -98,12 +98,27 @@ Applying a context does three things, in order:
 
 | Adapter | Selector | Also managed (cleared) |
 |---|---|---|
+| `aws` | `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_LOGIN_CACHE_DIRECTORY` | `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_ROLE_ARN`, container/IMDS credential sources |
 | `azure` | `AZURE_CONFIG_DIR` | `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` |
 | `gcloud` | `CLOUDSDK_CONFIG` | `CLOUDSDK_ACTIVE_CONFIG_NAME`, `GOOGLE_APPLICATION_CREDENTIALS` |
 | `github` | `GH_CONFIG_DIR` | `GH_TOKEN`, `GITHUB_TOKEN`, `GH_HOST` |
 | `claude` | `CLAUDE_CONFIG_DIR` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` |
 | `codex` | `CODEX_HOME` | `OPENAI_API_KEY` |
 | `kubernetes` | `KUBECONFIG` | — (also honored by helm, k9s, …) |
+
+AWS is the one provider with no single config-directory variable, so the `aws`
+adapter redirects all three writable channels the CLI owns: both profile files
+and the `aws login` credential cache. `csw login aws` picks the right re-auth
+flow from the account's own config — `aws sso login` for an IAM Identity Center
+profile, `aws login` otherwise (including a brand-new state directory). Denial
+also sets `AWS_EC2_METADATA_DISABLED`, because on an EC2 host instance metadata
+is itself a credential source that would otherwise be a silent fallback.
+
+Two deliberate limits. `AWS_REGION` / `AWS_DEFAULT_REGION` are **not** managed —
+they carry no credential and clearing them would break unrelated tooling. And
+the Identity Center token cache (`~/.aws/sso/cache`) has no environment
+override, so it stays machine-wide; entries are keyed by session so accounts
+never collide, but those tokens are not isolated per context.
 
 Codex profiles also persist an absolute source path for the app-owned
 `openai-bundled` marketplace. When an isolated Codex account is activated,

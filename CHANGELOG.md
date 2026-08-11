@@ -1,7 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-08-11
 
+- **New `aws` adapter.** AWS has no single config-directory variable, so the
+  adapter redirects all three writable channels the CLI owns: `AWS_CONFIG_FILE`,
+  `AWS_SHARED_CREDENTIALS_FILE`, and the `aws login` cache
+  (`AWS_LOGIN_CACHE_DIRECTORY`). Static keys, session tokens, profile selectors,
+  assumed-role variables, and the container credential sources are all cleared,
+  so nothing leaks in from the calling shell.
+- `csw login aws` picks the re-auth flow from the account's own config:
+  `aws sso login` for an IAM Identity Center profile, `aws login` otherwise.
+  Identity is verified and pinned with `aws sts get-caller-identity`.
+- Denying `aws` also sets `AWS_EC2_METADATA_DISABLED`, so a denied context on an
+  EC2 host cannot fall through to the instance role.
+- `AWS_REGION`/`AWS_DEFAULT_REGION` are deliberately unmanaged. Known limit: the
+  Identity Center token cache (`~/.aws/sso/cache`) has no environment override
+  and stays machine-wide — keyed by session, so accounts do not collide.
+- New optional `prepareStateDir` adapter hook, used by `aws` to create the login
+  cache directory the CLI expects to already exist.
 - Isolated Codex profiles now self-heal a stale app-owned
   `openai-bundled` marketplace source whenever the profile is activated. This
   prevents alternate `CODEX_HOME` accounts from retaining Browser/Chrome

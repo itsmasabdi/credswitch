@@ -1,7 +1,7 @@
 {
   "name": "credswitch",
-  "version": "0.3.2",
-  "description": "Give every project its own identity — context switching for AI agents and cloud CLIs (Claude Code, Codex, Azure, gcloud, GitHub, kubectl).",
+  "version": "0.4.0",
+  "description": "Give every project its own identity — context switching for AI agents and cloud CLIs (Claude Code, Codex, AWS, Azure, gcloud, GitHub, kubectl).",
   "type": "module",
   "license": "MIT",
   "author": "Masoud Abdi",
@@ -37,6 +37,8 @@
     "credentials",
     "context-switching",
     "multiple-accounts",
+    "aws",
+    "aws-cli",
     "azure-cli",
     "gcloud",
     "github-cli",

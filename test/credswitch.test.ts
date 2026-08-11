@@ -50,6 +50,29 @@ fi
 exit 1
 `;
 
+const FAKE_AWS = `#!/bin/sh
+if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
+  if [ -n "$AWS_SHARED_CREDENTIALS_FILE" ] && [ -f "$AWS_SHARED_CREDENTIALS_FILE" ]; then
+    printf '{"UserId":"AIDAEXAMPLE","Account":"111122223333","Arn":"arn:aws:iam::111122223333:user/%s"}\\n' \\
+      "$(cat "$AWS_SHARED_CREDENTIALS_FILE")"
+    exit 0
+  fi
+  echo "Unable to locate credentials." >&2
+  exit 255
+fi
+if [ "$1" = "login" ]; then
+  # Records that the cache directory existed before login — the CLI never creates it.
+  if [ -d "$AWS_LOGIN_CACHE_DIRECTORY" ]; then printf 'cached' > "$AWS_LOGIN_CACHE_DIRECTORY/session"; fi
+  printf 'console-user' > "$AWS_SHARED_CREDENTIALS_FILE"
+  exit 0
+fi
+if [ "$1" = "sso" ] && [ "$2" = "login" ]; then
+  printf 'sso-user' > "$AWS_SHARED_CREDENTIALS_FILE"
+  exit 0
+fi
+exit 1
+`;
+
 interface Fixture {
   tmp: string;
   home: string;
@@ -70,6 +93,7 @@ function setup(): Fixture {
   fs.writeFileSync(path.join(bin, "az"), FAKE_AZ, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "gh"), FAKE_GH, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "codex"), FAKE_CODEX, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "aws"), FAKE_AWS, { mode: 0o755 });
   // csw shim so the shell hook can call back into the CLI under test
   fs.writeFileSync(path.join(bin, "csw"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, {
     mode: 0o755
@@ -131,6 +155,18 @@ function seedCodexAccount(f: Fixture): { codexHome: string; project: string } {
   ok(csw(f, ["context", "add", "codex-app", "codex:app"]), "codex context");
   ok(csw(f, ["bind", "codex-app", "--dir", project]), "bind codex context");
   return { codexHome, project };
+}
+
+function seedAwsAccount(f: Fixture): { stateDir: string; project: string } {
+  ok(csw(f, ["init"]), "init");
+  const stateDir = path.join(f.state, "aws-client");
+  const project = path.join(f.home, "aws-project");
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  ok(csw(f, ["account", "add", "aws", "--name", "client", "--path", stateDir]), "add aws");
+  ok(csw(f, ["context", "add", "ctx-aws", "aws:client"]), "aws context");
+  ok(csw(f, ["bind", "ctx-aws", "--dir", project]), "bind aws context");
+  return { stateDir, project };
 }
 
 test("help prints usage", () => {
@@ -481,6 +517,66 @@ source = "https://example.invalid/custom-bundle.git"
   assert.equal(doctor.status, 2);
   assert.match(doctor.stdout, /bundled marketplace: openai-bundled is not a single local marketplace source/);
   assert.equal(fs.readFileSync(configFile, "utf8"), config);
+});
+
+test("aws accounts redirect both profile files and the login cache", () => {
+  const f = setup();
+  const { stateDir, project } = seedAwsAccount(f);
+
+  // AWS writes into the login cache but never creates it — prepareStateDir must.
+  assert.ok(fs.existsSync(path.join(stateDir, "login-cache")), "login cache must exist before first login");
+
+  const activated = csw(f, ["env", "--cwd", project]);
+  ok(activated, "activate aws context");
+  assert.ok(activated.stdout.includes(`export AWS_CONFIG_FILE='${path.join(stateDir, "config")}'`));
+  assert.ok(
+    activated.stdout.includes(`export AWS_SHARED_CREDENTIALS_FILE='${path.join(stateDir, "credentials")}'`)
+  );
+  assert.ok(
+    activated.stdout.includes(`export AWS_LOGIN_CACHE_DIRECTORY='${path.join(stateDir, "login-cache")}'`)
+  );
+
+  // Static keys, session tokens and profile selectors must never survive from the calling shell.
+  for (const leak of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"]) {
+    assert.match(activated.stdout, new RegExp(`unset ${leak}\\b`), `${leak} must be cleared`);
+  }
+  // Region carries no credential — clearing it would break unrelated tooling.
+  assert.doesNotMatch(activated.stdout, /AWS_REGION|AWS_DEFAULT_REGION/);
+});
+
+test("a context without aws denies the CLI and blocks every fallback", () => {
+  const f = setup();
+  seedTwoAccounts(f); // azure only — aws is omitted, therefore denied
+
+  const pinned = csw(f, ["shell", "ctx-alice"]);
+  ok(pinned, "pin shell to a context with no aws account");
+  const denied = path.join(f.state, "denied", "aws");
+  assert.ok(pinned.stdout.includes(`export AWS_CONFIG_FILE='${path.join(denied, "config")}'`));
+  assert.ok(pinned.stdout.includes(`export AWS_SHARED_CREDENTIALS_FILE='${path.join(denied, "credentials")}'`));
+  // Instance metadata is a credential source too: without this an EC2 host
+  // would fall through to the instance role.
+  assert.match(pinned.stdout, /export AWS_EC2_METADATA_DISABLED='true'/);
+  assert.equal(fs.statSync(path.join(f.state, "denied")).mode & 0o777, 0o500, "denied root must be read-only");
+});
+
+test("aws login command follows the account's own profile type", () => {
+  const f = setup();
+  const { stateDir } = seedAwsAccount(f);
+
+  const consoleLogin = csw(f, ["account", "login", "aws:client"]);
+  ok(consoleLogin, "console login");
+  assert.match(consoleLogin.stdout, /Launching login: aws login$/m);
+  assert.match(consoleLogin.stdout, /ok identity: arn:aws:iam::111122223333:user\/console-user \(pinned\)/);
+  assert.equal(fs.readFileSync(path.join(stateDir, "login-cache", "session"), "utf8"), "cached");
+
+  fs.writeFileSync(
+    path.join(stateDir, "config"),
+    "[profile default]\nsso_session = client\nsso_account_id = 111122223333\n"
+  );
+  const ssoLogin = csw(f, ["account", "login", "aws:client"]);
+  ok(ssoLogin, "sso login");
+  assert.match(ssoLogin.stdout, /Launching login: aws sso login$/m);
+  assert.match(ssoLogin.stdout, /ok identity: arn:aws:iam::111122223333:user\/sso-user \(pinned\)/);
 });
 
 test("one identity per adapter per context is enforced", () => {
