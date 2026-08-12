@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.2 — 2026-08-12
+
+Safety patch. Both fixes are silent-wrong-identity or total-denial failures in
+the agent path, found by review.
+
+- **A `csw run` context now survives into the shells an agent spawns.**
+  `csw run -c acme -- claude` exports the context, but any subprocess that
+  sources your rc file runs the hook, which re-resolved from the working
+  directory alone and dropped back to the global default — so the agent ran as
+  the wrong identity, silently. The hook now forwards the inherited floor
+  (`CREDSWITCH_INHERIT`, internal plumbing alongside `CREDSWITCH_HOOK_KEY`) to
+  `csw env`, restoring the documented precedence: a folder binding still wins,
+  but the run context beats the default. Bindings deliberately keep winning, so
+  an agent that enters another client's folder picks up that client's identity
+  instead of carrying the launch context's credentials into it.
+- **An unwritable Codex profile no longer denies every provider in every
+  shell.** The bundled-marketplace self-heal ran inside context resolution and
+  threw on failure; the hook reads any non-zero exit as "resolution failed" and
+  denies all seven adapters, every prompt, with the real error swallowed. The
+  repair no longer throws, and no longer runs during resolution at all —
+  `setup`, `doctor`, and `login` own it, and `doctor` reports failures. The
+  hook path is now side-effect free.
+- `cliInstalled` resolves PATH directly instead of shelling out to `which`,
+  which Debian 13 dropped from debianutils — every adapter reported "not
+  installed" there. Also removes several subprocesses per `doctor`/`login`.
+- `redactHome` matches on a path boundary: `/Users/you-backup` rendered as
+  `~-backup`.
+- Removed tolerance for configs predating the `gen` counter, and the unused
+  `description` field on accounts.
+
 ## 0.4.1 — 2026-08-11
 
 - `csw --help` reported 0.3.2 on the 0.4.0 release: the version was hardcoded

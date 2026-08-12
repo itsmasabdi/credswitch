@@ -27,9 +27,13 @@ export function realpathSafe(value: string): string {
   }
 }
 
+/** Shorten $HOME to ~ for display. Matches on a path boundary: a sibling
+ *  directory like /Users/mas-backup must not render as ~-backup. */
 export function redactHome(value: string): string {
   const home = os.homedir();
-  return value.startsWith(home) ? `~${value.slice(home.length)}` : value;
+  if (value === home) return "~";
+  if (value.startsWith(home + path.sep)) return `~${value.slice(home.length)}`;
+  return value;
 }
 
 export function shellQuote(value: string): string {

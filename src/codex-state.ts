@@ -2,8 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AccountConfig } from "./adapters.js";
-import type { Config } from "./config.js";
-import { atomicWrite, CliError, realpathSafe, withLock } from "./util.js";
+import { atomicWrite, realpathSafe, withLock } from "./util.js";
 
 const BUNDLED_MARKETPLACE_SECTION =
   /^\s*\[\s*marketplaces\s*\.\s*(?:openai-bundled|"openai-bundled"|'openai-bundled')\s*\]\s*(?:#.*)?$/;
@@ -16,7 +15,9 @@ export type CodexMarketplaceState =
   | { kind: "aligned"; configFile: string; expectedSource: string; source: string }
   | { kind: "misaligned"; configFile: string; expectedSource: string; source: string }
   | { kind: "repaired"; configFile: string; expectedSource: string; previousSource: string }
-  | { kind: "unsupported"; configFile: string; expectedSource: string; reason: string };
+  | { kind: "unsupported"; configFile: string; expectedSource: string; reason: string }
+  /** The rewrite was attempted and failed (unwritable profile, lock contention). */
+  | { kind: "failed"; configFile: string; expectedSource: string; reason: string };
 
 interface Line {
   start: number;
@@ -223,6 +224,12 @@ export function inspectCodexBundledMarketplace(codexHome: string): CodexMarketpl
  * reading that other profile's stale bundled Browser/Chrome builds after an
  * app update. Only this reserved marketplace section is changed; credentials,
  * other marketplaces, plugin choices, and caches are not touched.
+ *
+ * NEVER throws. This is one adapter's cosmetic self-heal; an unwritable Codex
+ * profile must not be able to fail a command — and it must never reach the
+ * shell hook, which reads any non-zero exit as "resolution failed" and denies
+ * every provider in every shell. Failures come back as `failed` for `doctor`
+ * to report.
  */
 export function repairCodexBundledMarketplace(codexHome: string): CodexMarketplaceState {
   const initial = analyse(codexHome);
@@ -247,29 +254,16 @@ export function repairCodexBundledMarketplace(codexHome: string): CodexMarketpla
       };
     });
   } catch (error) {
-    if (error instanceof CliError) throw error;
-    throw new CliError(
-      `Could not repair Codex's bundled marketplace source in ${initial.state.configFile}: ${(error as Error).message}\n` +
-        "Run 'csw doctor' after checking that the Codex profile is writable."
-    );
+    return {
+      kind: "failed",
+      configFile: initial.state.configFile,
+      expectedSource: initial.state.expectedSource,
+      reason: `could not rewrite the bundled marketplace source: ${(error as Error).message}`
+    };
   }
 }
 
 export function repairCodexAccountMarketplace(account: AccountConfig): CodexMarketplaceState | undefined {
   if (account.adapter !== "codex" || account.system || !account.stateDir) return undefined;
   return repairCodexBundledMarketplace(account.stateDir);
-}
-
-export function repairCodexContextMarketplaces(
-  config: Config,
-  contextName: string
-): Array<{ id: string; state: CodexMarketplaceState }> {
-  const context = config.contexts[contextName];
-  if (!context) return [];
-  const results: Array<{ id: string; state: CodexMarketplaceState }> = [];
-  for (const id of context.accounts) {
-    const state = repairCodexAccountMarketplace(config.accounts[id]);
-    if (state) results.push({ id, state });
-  }
-  return results;
 }

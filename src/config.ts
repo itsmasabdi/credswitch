@@ -12,7 +12,7 @@ export interface ContextConfig {
 export interface Config {
   version: 2;
   /** Monotonic save counter; the hook uses it to notice config changes. */
-  gen?: number;
+  gen: number;
   defaultContext?: string;
   accounts: Record<string, AccountConfig>;
   contexts: Record<string, ContextConfig>;
@@ -23,7 +23,7 @@ export const ACCOUNT_ID_RE = /^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const CONTEXT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function emptyConfig(): Config {
-  return { version: 2, accounts: {}, contexts: {}, bindings: {} };
+  return { version: 2, gen: 0, accounts: {}, contexts: {}, bindings: {} };
 }
 
 export function configExists(): boolean {
@@ -132,7 +132,7 @@ export function saveConfig(config: Config): void {
   if (errors.length > 0) {
     throw new CliError(`Refusing to save invalid config:\n  - ${errors.join("\n  - ")}`);
   }
-  config.gen = (config.gen ?? 0) + 1;
+  config.gen += 1;
   // List first: if we crash between the writes, the hook over-asks the
   // resolver (safe) rather than missing a binding transition (stale creds).
   // The gen race (list ahead of config) self-heals because `csw env` stamps
@@ -161,6 +161,6 @@ export function writeBindingsList(config: Config): void {
     .sort();
   // The #gen stamp changes on every save, so open shells re-apply their env
   // at the next prompt after ANY config change, not just binding transitions.
-  const lines = [`#gen\t${config.gen ?? 0}`, ...entries];
+  const lines = [`#gen\t${config.gen}`, ...entries];
   atomicWrite(bindingsListPath(), `${lines.join("\n")}\n`);
 }

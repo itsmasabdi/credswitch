@@ -12,10 +12,7 @@ import {
   writeBindingsList,
   type Config
 } from "./config.js";
-import {
-  repairCodexAccountMarketplace,
-  repairCodexContextMarketplaces
-} from "./codex-state.js";
+import { repairCodexAccountMarketplace } from "./codex-state.js";
 import {
   allManagedVars,
   applyEnv,
@@ -259,7 +256,6 @@ function describeAccount(account: AccountConfig): string {
   if (account.stateDir) parts.push(`state ${redactHome(account.stateDir)}`);
   if (account.kubeconfig) parts.push(`kubeconfig ${redactHome(account.kubeconfig)}`);
   if (account.pin) parts.push(`pinned: ${account.pin}`);
-  if (account.description) parts.push(account.description);
   return parts.join(" — ");
 }
 
@@ -534,7 +530,6 @@ export function cmdCurrent(args: string[]): void {
   if (pos.length > 0) throw new CliError("Usage: csw current [--explain]");
   const config = loadConfig();
   const res = resolveContext(config, { env: process.env, cwd: process.cwd() });
-  if (res.name) repairCodexContextMarketplaces(config, res.name);
 
   if (!opts.explain) {
     console.log(res.name ?? "(none)");
@@ -600,6 +595,13 @@ export function cmdRun(args: string[]): void {
   }
 
   const env = envForContext(config, res.name);
+  // The floor for everything this command spawns. CREDSWITCH_CONTEXT alone is
+  // not enough: a hooked subshell (an agent's Bash tool sources the user's rc)
+  // re-resolves from cwd and would silently drop back to the global default.
+  // A separate marker lets the hook tell "an ancestor process chose this" from
+  // "I applied this last prompt", so folder bindings still win but the run
+  // context beats the default — the documented precedence.
+  env.CREDSWITCH_INHERIT = res.name;
   const result = spawnSync(command[0], command.slice(1), {
     env: applyEnv(process.env, env),
     stdio: "inherit"
@@ -654,10 +656,10 @@ export function cmdShell(args: string[]): void {
  */
 export function cmdEnv(args: string[]): void {
   const { pos, opts } = parseArgs(args, {
-    valueFlags: { "--cwd": "cwd" },
+    valueFlags: { "--cwd": "cwd", "--inherit": "inherit" },
     boolFlags: { "--clear": "clear" }
   });
-  if (pos.length > 0) throw new CliError("Usage: csw env --cwd <dir> | csw env --clear");
+  if (pos.length > 0) throw new CliError("Usage: csw env --cwd <dir> [--inherit <ctx>] | csw env --clear");
 
   if (opts.clear) {
     for (const line of shellLines(clearedEnv())) console.log(line);
@@ -665,28 +667,39 @@ export function cmdEnv(args: string[]): void {
   }
 
   const cwdOpt = opts.cwd as string | undefined;
-  if (!cwdOpt) throw new CliError("Usage: csw env --cwd <dir> | csw env --clear");
+  if (!cwdOpt) throw new CliError("Usage: csw env --cwd <dir> [--inherit <ctx>] | csw env --clear");
+
+  // The context floor set by an ancestor `csw run`, forwarded by the hook.
+  const inherit = (opts.inherit as string | undefined) ?? "";
 
   // No config at all isn't a failure for the hook — it's "nothing configured".
   if (!configExists()) {
     const env = clearedEnv();
-    env.CREDSWITCH_HOOK_KEY = "|d"; // matches the hook's key when no list is readable
+    env.CREDSWITCH_HOOK_KEY = `|d:${inherit}`; // matches the hook's key when no list is readable
     for (const line of shellLines(env)) console.log(line);
     return;
   }
 
   const config = loadConfig();
-  // Location-only resolution: an empty env excludes pins and inherited contexts.
-  const res = resolveContext(config, { env: {}, cwd: cwdOpt });
+  // Location first, then the inherited floor — never this shell's own pin or
+  // last-applied context, which would make a bound tree impossible to leave.
+  // A stale --inherit is ignored rather than fatal: the hook reads any failure
+  // as "deny everything", which is far worse than falling back to the default.
+  const res = resolveContext(config, {
+    env: inherit && config.contexts[inherit] ? { CREDSWITCH_CONTEXT: inherit } : {},
+    cwd: cwdOpt
+  });
 
   // The key carries the gen of the config we ACTUALLY read. If the bindings
   // list was momentarily ahead (list is written first), the stamped key won't
   // match the hook's computed key, so the hook simply asks again next prompt.
-  const gen = config.gen ?? 0;
+  // It is a function of the hook's INPUTS (gen, binding, inherit), never of
+  // what resolved — otherwise the two can never agree.
+  const gen = config.gen;
 
   if (!res.name) {
     const env = clearedEnv();
-    env.CREDSWITCH_HOOK_KEY = `${gen}|d`;
+    env.CREDSWITCH_HOOK_KEY = `${gen}|d:${inherit}`;
     for (const line of shellLines(env)) console.log(line);
     return;
   }
@@ -695,7 +708,7 @@ export function cmdEnv(args: string[]): void {
   env.CREDSWITCH_BOUND_DIR = res.bindingDir ?? null;
   env.CREDSWITCH_OVERRIDE = null;
   env.CREDSWITCH_HOOK_KEY =
-    res.source === "binding" ? `${gen}|b:${res.bindingDir}:${res.name}` : `${gen}|d`;
+    res.source === "binding" ? `${gen}|b:${res.bindingDir}:${res.name}` : `${gen}|d:${inherit}`;
   for (const line of shellLines(env)) console.log(line);
 }
 
@@ -756,7 +769,7 @@ export function cmdDoctor(args: string[]): void {
           );
         } else if (marketplace?.kind === "aligned") {
           console.log(`  ok ${id} bundled marketplace: ${redactHome(marketplace.expectedSource)}`);
-        } else if (marketplace?.kind === "unsupported") {
+        } else if (marketplace?.kind === "unsupported" || marketplace?.kind === "failed") {
           failed = true;
           console.log(`  !  ${id} bundled marketplace: ${marketplace.reason}`);
         }
@@ -1054,6 +1067,8 @@ export function cmdSetup(args: string[]): void {
       console.log(
         `Repaired ${id} bundled marketplace: ${redactHome(marketplace.previousSource)} → ${redactHome(marketplace.expectedSource)}`
       );
+    } else if (marketplace?.kind === "failed") {
+      console.log(`! ${id} bundled marketplace: ${marketplace.reason}`);
     }
   }
 

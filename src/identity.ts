@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import type { AccountConfig } from "./adapters.js";
 import { getAdapter } from "./adapters.js";
 import { allManagedVars, applyEnv, type EnvOverrides } from "./env.js";
@@ -8,9 +10,38 @@ export interface IdentityResult {
   summary: string;
 }
 
+function isExecutableFile(file: string): boolean {
+  try {
+    if (!fs.statSync(file).isFile()) return false;
+    fs.accessSync(file, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const installedCache = new Map<string, boolean>();
+
+/**
+ * Resolve a command against PATH ourselves. Shelling out to `which` costs a
+ * process per call (several per account in doctor/login) and is not universally
+ * present — Debian 13 dropped it from debianutils, where every adapter would
+ * then report "not installed". Memoized: PATH cannot change mid-process.
+ */
 export function cliInstalled(cli: string): boolean {
-  const result = spawnSync("which", [cli], { stdio: "ignore" });
-  return result.status === 0;
+  const cached = installedCache.get(cli);
+  if (cached !== undefined) return cached;
+
+  let found: boolean;
+  if (cli.includes(path.sep)) {
+    found = isExecutableFile(path.resolve(cli));
+  } else {
+    found = (process.env.PATH ?? "")
+      .split(path.delimiter)
+      .some((dir) => dir !== "" && isExecutableFile(path.join(dir, cli)));
+  }
+  installedCache.set(cli, found);
+  return found;
 }
 
 /**

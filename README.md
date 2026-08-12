@@ -92,7 +92,7 @@ Applying a context does three things, in order:
 2. **Denies every adapter the context omits.** Denied selectors point into a read-only directory, so the provider CLI sees empty state and cannot write any — an accidental `az login` inside a denied context fails instead of quietly creating a shared fallback identity.
 3. **Applies the context's accounts.** A `--system` account is the explicit way to say "this context uses the machine's default login" for that one provider.
 
-`inherited` is what makes agents composable: `csw run --context acme -- claude` exports `CREDSWITCH_CONTEXT=acme`, so when the agent itself calls `csw run -- az ...` anywhere on disk, it stays acme unless a folder binding says otherwise.
+`inherited` is what makes agents composable: `csw run --context acme -- claude` sets acme as the *floor* for everything the agent spawns — whether it calls `csw run -- az ...` directly, or shells out to a subprocess that sources your rc file and runs the hook. Anywhere on disk, it stays acme unless a folder binding says otherwise. That exception matters: an agent that wanders into another client's bound folder picks up *that* client's identity rather than carrying acme's credentials into it.
 
 ## Adapters
 
@@ -121,15 +121,16 @@ override, so it stays machine-wide; entries are keyed by session so accounts
 never collide, but those tokens are not isolated per context.
 
 Codex profiles also persist an absolute source path for the app-owned
-`openai-bundled` marketplace. When an isolated Codex account is activated,
-credswitch verifies that this reserved local source lives under the active
-`CODEX_HOME` and atomically rebases it if it still points at another profile
-(commonly `~/.codex/.tmp`). This keeps bundled Browser/Chrome plugins aligned
-with ChatGPT app updates. `csw setup` repairs every configured Codex account,
-and `csw doctor` reports the repair. Only that marketplace source line is
-changed; credentials, other marketplaces, plugin choices, and caches are left
-alone. Ambiguous or non-local marketplace configurations are not rewritten and
-are flagged by `csw doctor`.
+`openai-bundled` marketplace. If it still points at another profile (commonly
+`~/.codex/.tmp`), credswitch atomically rebases it under the account's own
+`CODEX_HOME`, keeping bundled Browser/Chrome plugins aligned with ChatGPT app
+updates. `csw setup`, `csw doctor`, and `csw login` do this; context switching
+deliberately does not — the hook path stays side-effect free, because a failure
+there would read as "resolution failed" and deny every provider. Only that
+marketplace source line is changed; credentials, other marketplaces, plugin
+choices, and caches are left alone. Ambiguous or non-local marketplace
+configurations are not rewritten, and both those and failed rewrites are
+flagged by `csw doctor`.
 
 Verified on macOS: a redirected `CLAUDE_CONFIG_DIR` fully isolates Claude Code from the Keychain-bound default login (`authMethod: none` when denied).
 
@@ -160,7 +161,7 @@ That catches the classic consultant accident — an `az login` run in the wrong 
 ~/.local/state/credswitch/denied/   # read-only; where denied providers point
 ```
 
-credswitch never reads, writes, copies, or proxies credentials. It only decides **which** state each provider CLI sees, and lets the provider's own tooling do every login. Your repos contain nothing: bindings live in your home config, keyed by folder path. Config mutations take a lock, so concurrent agents can't lose each other's updates.
+credswitch never reads, copies, or proxies credentials. It only decides **which** state each provider CLI sees, and lets the provider's own tooling do every login. It writes into provider state in exactly one place: the `openai-bundled` marketplace source line described above, and only from `setup`, `doctor`, and `login`. Your repos contain nothing: bindings live in your home config, keyed by folder path. Config mutations take a lock, so concurrent agents can't lose each other's updates.
 
 `csw account remove` only edits config — it never deletes credential state, and tells you where the state lives so you can remove it yourself.
 

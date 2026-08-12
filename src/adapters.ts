@@ -6,7 +6,6 @@ import { CliError, ensureDir, expandPath } from "./util.js";
 
 export interface AccountConfig {
   adapter: string;
-  description?: string;
   /** Isolated provider state directory (most adapters). */
   stateDir?: string;
   /** kubeconfig file path (kubernetes adapter). */

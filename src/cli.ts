@@ -60,7 +60,7 @@ Plumbing:
   csw bind <context> [--dir <dir>] | unbind [--dir <dir>]
   csw shell [<context>] | --off                pin / unpin this shell (eval-able)
   csw hook <zsh|bash>                          print the auto-switch hook
-  csw env --cwd <dir> | --clear                hook plumbing
+  csw env --cwd <dir> [--inherit <ctx>] | --clear   hook plumbing
 
 Adapters: ${adapterNames().join(", ")}
 An adapter a context omits is DENIED (its CLI sees empty, read-only state).

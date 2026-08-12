@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { adapters, getAdapter } from "./adapters.js";
-import { repairCodexContextMarketplaces } from "./codex-state.js";
 import type { Config } from "./config.js";
 import { deniedRoot, stateRoot } from "./paths.js";
 import { CliError, ensureDir, shellQuote } from "./util.js";
@@ -47,11 +46,10 @@ export function envForContext(config: Config, contextName: string): EnvOverrides
     throw new CliError(`Unknown context: ${contextName}\nKnown contexts: ${known}`);
   }
 
-  // CODEX_HOME contains app-owned marketplace metadata as well as login state.
-  // Rebase the reserved bundled marketplace before exporting this profile so
-  // app updates cannot leave Browser/Chrome on another profile's stale build.
-  repairCodexContextMarketplaces(config, contextName);
-
+  // Deliberately side-effect free. This runs on every prompt the hook has work
+  // for; provider-state maintenance (e.g. Codex's bundled marketplace) belongs
+  // in setup/doctor/login, where a failure can be reported instead of being
+  // read by the hook as "resolution failed" — which denies every provider.
   const env: EnvOverrides = {};
   for (const name of allManagedVars()) env[name] = null;
 
@@ -90,6 +88,7 @@ export function clearedEnv(): EnvOverrides {
   for (const name of allManagedVars()) env[name] = null;
   env.CREDSWITCH_CONTEXT = null;
   env.CREDSWITCH_OVERRIDE = null;
+  env.CREDSWITCH_INHERIT = null;
   env.CREDSWITCH_BOUND_DIR = null;
   env.CREDSWITCH_HOOK_KEY = null;
   return env;

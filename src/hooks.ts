@@ -12,6 +12,10 @@ import { shellQuote } from "./util.js";
  * disagree with `csw current`. If csw fails, the hook clears every managed
  * variable and warns — fail closed, never stale.
  * Shells pinned with `csw shell` (CREDSWITCH_OVERRIDE=1) are left alone.
+ *
+ * CREDSWITCH_INHERIT is the floor set by an ancestor `csw run`: it is forwarded
+ * to `csw env` so a folder binding still wins, but a shell an agent spawns
+ * inside `csw run -c acme -- ...` cannot fall back to the global default.
  */
 
 /**
@@ -22,7 +26,12 @@ import { shellQuote } from "./util.js";
 function fallbackDeny(): string {
   const root = deniedRoot();
   const exports: string[] = [];
-  const unsets = new Set<string>(["CREDSWITCH_CONTEXT", "CREDSWITCH_BOUND_DIR", "CREDSWITCH_HOOK_KEY"]);
+  const unsets = new Set<string>([
+    "CREDSWITCH_CONTEXT",
+    "CREDSWITCH_INHERIT",
+    "CREDSWITCH_BOUND_DIR",
+    "CREDSWITCH_HOOK_KEY"
+  ]);
   for (const adapter of Object.values(adapters)) {
     const denied = adapter.deniedEnv(root);
     for (const [key, value] of Object.entries(denied)) exports.push(`export ${key}=${shellQuote(value)}`);
@@ -72,9 +81,9 @@ _credswitch_hook() {
       fi
     done < "$list"
   fi
-  if [[ -n "$hit" ]]; then key="$gen|b:$hit:$hitctx"; else key="$gen|d"; fi
+  if [[ -n "$hit" ]]; then key="$gen|b:$hit:$hitctx"; else key="$gen|d:$CREDSWITCH_INHERIT"; fi
   [[ "$key" == "$CREDSWITCH_HOOK_KEY" ]] && return
-  if out="$(command csw env --cwd "$pwdreal" 2>/dev/null)"; then
+  if out="$(command csw env --cwd "$pwdreal" --inherit "$CREDSWITCH_INHERIT" 2>/dev/null)"; then
     eval "$out"
   else
     eval ${shellQuote(fallbackDeny())}
@@ -106,9 +115,9 @@ _credswitch_hook() {
       fi
     done < "$list"
   fi
-  if [[ -n "$hit" ]]; then key="$gen|b:$hit:$hitctx"; else key="$gen|d"; fi
+  if [[ -n "$hit" ]]; then key="$gen|b:$hit:$hitctx"; else key="$gen|d:$CREDSWITCH_INHERIT"; fi
   [[ "$key" == "$CREDSWITCH_HOOK_KEY" ]] && return
-  if out="$(command csw env --cwd "$pwdreal" 2>/dev/null)"; then
+  if out="$(command csw env --cwd "$pwdreal" --inherit "$CREDSWITCH_INHERIT" 2>/dev/null)"; then
     eval "$out"
   else
     eval ${shellQuote(fallbackDeny())}

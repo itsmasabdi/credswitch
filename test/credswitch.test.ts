@@ -437,7 +437,7 @@ test("env --cwd resolves bindings and default through the real resolver", () => 
   assert.match(cleared.stdout, /unset CREDSWITCH_CONTEXT/);
 });
 
-test("activating an isolated Codex profile rebases only its bundled marketplace source", () => {
+test("repairing an isolated Codex profile rewrites only its bundled marketplace source", () => {
   const f = setup();
   const { codexHome, project } = seedCodexAccount(f);
   const staleSource = path.join(f.home, ".codex", ".tmp", "bundled-marketplaces", "openai-bundled");
@@ -460,11 +460,14 @@ enabled = true
 `;
   fs.writeFileSync(configFile, before, { mode: 0o640 });
 
-  // `env --cwd` is the path used by the zsh/bash hook before launching Codex.
+  // `env --cwd` is the per-prompt hook path: it must activate the profile and
+  // touch nothing. Provider-state maintenance belongs to setup/doctor/login.
   const activated = csw(f, ["env", "--cwd", project]);
   ok(activated, "activate codex context");
   assert.ok(activated.stdout.includes(`export CODEX_HOME='${codexHome}'`));
+  assert.equal(fs.readFileSync(configFile, "utf8"), before, "the hook path must not write to provider state");
 
+  ok(csw(f, ["doctor", "codex-app"]), "doctor repairs the profile");
   const after = fs.readFileSync(configFile, "utf8");
   assert.equal(
     after,
@@ -479,8 +482,38 @@ enabled = true
   assert.ok(!fs.existsSync(`${configFile}.credswitch-marketplace.lock`), "repair lock must be released");
 
   const repaired = after;
-  ok(csw(f, ["env", "--cwd", project]), "activate already-repaired context");
+  ok(csw(f, ["doctor", "codex-app"]), "repair an already-repaired profile");
   assert.equal(fs.readFileSync(configFile, "utf8"), repaired, "aligned config must be idempotent");
+});
+
+test("an unwritable Codex profile cannot break context resolution", () => {
+  const f = setup();
+  const { codexHome, project } = seedCodexAccount(f);
+  const configFile = path.join(codexHome, "config.toml");
+  const stale = `[marketplaces.openai-bundled]
+source_type = "local"
+source = ${JSON.stringify(path.join(f.home, "elsewhere", ".tmp", "bundled-marketplaces", "openai-bundled"))}
+`;
+  fs.writeFileSync(configFile, stale);
+  fs.chmodSync(codexHome, 0o500); // repair cannot take its lock or write
+
+  try {
+    // The hook reads a non-zero exit as "resolution failed" and denies EVERY
+    // provider in EVERY shell. One adapter's cosmetic self-heal must never
+    // be able to trigger that.
+    const env = csw(f, ["env", "--cwd", project]);
+    ok(env, "env --cwd must survive an unwritable codex profile");
+    assert.ok(env.stdout.includes(`export CODEX_HOME='${codexHome}'`), "the context must still apply");
+
+    ok(csw(f, ["current"], { cwd: project }), "current must survive too");
+
+    // doctor is where the failure surfaces.
+    const doctor = csw(f, ["doctor", "codex-app"]);
+    assert.equal(doctor.status, 2, "doctor must report the failure");
+    assert.match(doctor.stdout, /bundled marketplace: could not rewrite/);
+  } finally {
+    fs.chmodSync(codexHome, 0o700);
+  }
 });
 
 test("setup and doctor report Codex bundled-marketplace repairs", () => {
@@ -710,6 +743,35 @@ test("run propagates the child's exit code", () => {
   seedTwoAccounts(f);
   const result = csw(f, ["run", "-c", "ctx-alice", "--", "sh", "-c", "exit 7"]);
   assert.equal(result.status, 7);
+});
+
+test("a run context survives into hooked subshells, but folder bindings still win", () => {
+  const f = setup();
+  seedTwoAccounts(f);
+  const unbound = path.join(f.home, "unbound");
+  const bound = path.join(f.home, "bound-to-bob");
+  fs.mkdirSync(unbound, { recursive: true });
+  fs.mkdirSync(bound, { recursive: true });
+  ok(csw(f, ["use", "ctx-bob"]), "global default = ctx-bob");
+  ok(csw(f, ["bind", "ctx-bob", "--dir", bound]), "bind");
+
+  // An agent launched by `csw run` spawns shells that source the user's rc —
+  // so the hook re-resolves. Without an inherited floor it drops to the global
+  // default, silently running as the wrong identity.
+  const whoami = `az account show 2>/dev/null | grep -o '"alice"\\|"bob"'`;
+  const script = `
+eval "$(csw hook bash)"
+echo "subshell:$(${whoami})"
+cd ${bound}; _credswitch_hook
+echo "bound:$(${whoami})"
+cd ${unbound}; _credswitch_hook
+echo "back:$(${whoami})"
+`;
+  const result = csw(f, ["run", "-c", "ctx-alice", "--", "bash", "--norc", "-c", script], { cwd: unbound });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /subshell:"alice"/, "the run context must survive into the subshell");
+  assert.match(result.stdout, /bound:"bob"/, "a folder binding must still override it");
+  assert.match(result.stdout, /back:"alice"/, "and the run context returns on leaving");
 });
 
 test("hook output is resolver-backed with a fail-closed fallback", () => {
@@ -949,13 +1011,26 @@ test("env --cwd stamps the hook key with the config generation", () => {
 
   ok(csw(f, ["use", "ctx-bob"]), "use");
   const unbound = csw(f, ["env", "--cwd", f.home]);
-  assert.match(unbound.stdout, /export CREDSWITCH_HOOK_KEY='\d+\|d'/);
+  assert.match(unbound.stdout, /export CREDSWITCH_HOOK_KEY='\d+\|d:'/);
 
   const listGen = fs
     .readFileSync(path.join(path.dirname(f.configFile), "bindings.list"), "utf8")
     .split("\n")[0]
     .split("\t")[1];
-  assert.match(unbound.stdout, new RegExp(`export CREDSWITCH_HOOK_KEY='${listGen}\\|d'`), "key gen matches list gen");
+  assert.match(unbound.stdout, new RegExp(`export CREDSWITCH_HOOK_KEY='${listGen}\\|d:'`), "key gen matches list gen");
+
+  // The key is a function of the hook's INPUTS (gen, binding, inherited floor),
+  // never of what resolved — otherwise the two can never agree and the fast
+  // path re-invokes csw on every prompt.
+  const inherited = csw(f, ["env", "--cwd", f.home, "--inherit", "ctx-alice"]);
+  assert.match(inherited.stdout, /export CREDSWITCH_CONTEXT='ctx-alice'/, "the floor beats the global default");
+  assert.match(inherited.stdout, /export CREDSWITCH_HOOK_KEY='\d+\|d:ctx-alice'/);
+
+  // A floor naming a deleted context must fall back, never fail: the hook reads
+  // a non-zero exit as "deny every provider".
+  const stale = csw(f, ["env", "--cwd", f.home, "--inherit", "ctx-gone"]);
+  ok(stale, "a stale floor must not fail the hook");
+  assert.match(stale.stdout, /export CREDSWITCH_CONTEXT='ctx-bob'/, "falls back to the default");
 });
 
 test("csw setup installs the shell hook idempotently", () => {
