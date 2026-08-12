@@ -798,7 +798,10 @@ test("hook output is resolver-backed with a fail-closed fallback", () => {
   assert.notEqual(bad.status, 0);
 });
 
-const zshAvailable = spawnSync("zsh", ["--version"], { stdio: "ignore" }).status === 0;
+// Resolve the path rather than assuming /bin/zsh: it lives in /usr/bin on
+// most Linux distributions, and is absent entirely on a bare CI runner.
+const zshPath = spawnSync("sh", ["-c", "command -v zsh"], { encoding: "utf8" }).stdout.trim();
+const zshAvailable = zshPath !== "";
 
 test("zsh hook applies bindings, default, and clears on leave", { skip: !zshAvailable }, () => {
   const f = setup();
@@ -818,7 +821,7 @@ echo "nested:\${CREDSWITCH_CONTEXT:-none}"
 cd /; _credswitch_hook
 echo "out:\${CREDSWITCH_CONTEXT:-none}:\${AZURE_CONFIG_DIR:+set}"
 `;
-  const result = spawnSync("zsh", ["-f", "-c", script], {
+  const result = spawnSync(zshPath, ["-f", "-c", script], {
     encoding: "utf8",
     cwd: f.home,
     env: f.env
@@ -845,7 +848,7 @@ csw context set ctx-alice azure:bob >/dev/null
 _credswitch_hook
 echo "after:$(az account show 2>/dev/null | grep -o '"alice"\\|"bob"')"
 `;
-  const result = spawnSync("zsh", ["-f", "-c", script], { encoding: "utf8", cwd: projectA, env: f.env });
+  const result = spawnSync(zshPath, ["-f", "-c", script], { encoding: "utf8", cwd: projectA, env: f.env });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /before:"alice"/);
   assert.match(result.stdout, /after:"bob"/);
@@ -1111,13 +1114,13 @@ test("csw setup installs the shell hook idempotently", () => {
   assert.equal(fs.readFileSync(rc, "utf8"), content, "rc file must not grow");
 });
 
-test("csw setup bootstrap denies providers when csw is unavailable", () => {
+test("csw setup bootstrap denies providers when csw is unavailable", { skip: !zshAvailable }, () => {
   const f = setup();
   ok(csw(f, ["setup", "--shell", "zsh"]), "setup");
   const rc = path.join(f.home, ".zshrc");
 
   const result = spawnSync(
-    "/bin/zsh",
+    zshPath,
     ["-f", "-c", `source ${JSON.stringify(rc)}; print -r -- "$AZURE_CONFIG_DIR|$CODEX_HOME|\${ANTHROPIC_API_KEY-unset}"`],
     {
       encoding: "utf8",

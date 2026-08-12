@@ -8,14 +8,22 @@ on:
 jobs:
   test:
     strategy:
+      # Don't cancel the rest of the matrix on the first failure — one
+      # platform-specific break should not hide the others' results.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         node: [20, 22]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
+      # The hook is the core of this tool, so its tests must actually run on
+      # Linux. Runners ship bash but not zsh, and the zsh tests skip silently
+      # without it.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - run: npm ci
       - run: npm test
