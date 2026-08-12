@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — 2026-08-12
+
+- **`--json` on `current`, `list`, `doctor`, and `account list`.** An agent can
+  now check which identity it is holding without parsing prose. `doctor --json`
+  keeps its exit code (2 on drift or breakage) and writes nothing but the
+  report to stdout, so it works as a CI gate.
+- **`doctor` probes each account once, concurrently.** It previously re-ran the
+  live identity check for every (context, account) pair, serially, with a 30s
+  timeout each — an account shared by five contexts was five network round
+  trips. Identity checks are now async and deduplicated by account id.
+- Adapters that isolate through a single directory variable (azure, gcloud,
+  github, claude, codex) are declared through one `singleDirAdapter` factory
+  instead of repeating the same five fields. Adding a provider of that shape is
+  now a table entry; the isolate/deny/create-state invariant is defined once.
+- `commands.ts` (1,077 lines) split into `src/commands/` by area — account,
+  context, binding, session, doctor, porcelain — with the shared helpers in one
+  place. No file is over 350 lines now.
+
 ## 0.4.2 — 2026-08-12
 
 Safety patch. Both fixes are silent-wrong-identity or total-denial failures in

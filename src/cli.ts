@@ -17,7 +17,7 @@ import {
   cmdShell,
   cmdUnbind,
   cmdUse
-} from "./commands.js";
+} from "./commands/index.js";
 import { adapterNames } from "./adapters.js";
 import { configPath, stateRoot } from "./paths.js";
 import { CliError, redactHome } from "./util.js";
@@ -46,10 +46,10 @@ Everyday:
   csw setup                                    one-time: config + shell hook (auto-switching)
   csw login <adapter> [--as <n>] [--global]    give THIS folder its own <adapter> identity
   csw local [<context>]                        bind this folder to a named context (blank: show)
-  csw current [--explain]                      resolved context (and why)
+  csw current [--explain] [--json]             resolved context (and why)
   csw run [--context <ctx>] -- <cmd> [args]    run one command inside a context
-  csw list                                     contexts, accounts, bindings
-  csw doctor [<context>]                       verify paths, CLIs, live identities, drift
+  csw list [--json]                            contexts, accounts, bindings
+  csw doctor [<context>] [--json]              verify paths, CLIs, live identities, drift
 
 Plumbing:
   csw init                                     create the config file only
@@ -75,7 +75,7 @@ Environment:
   CREDSWITCH_STATE_HOME    override state root    (default ${redactHome(stateRoot())})`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const [, , rawCommand, ...args] = process.argv;
   const command = rawCommand || "help";
 
@@ -92,13 +92,13 @@ function main(): void {
       case "setup":
         return cmdSetup(args);
       case "login":
-        return cmdLogin(args);
+        return await cmdLogin(args);
       case "local":
         return cmdLocal(args);
       case "init":
         return cmdInit(args);
       case "account":
-        return cmdAccount(args);
+        return await cmdAccount(args);
       case "context":
         return cmdContext(args);
       case "list":
@@ -120,17 +120,22 @@ function main(): void {
       case "hook":
         return cmdHook(args);
       case "doctor":
-        return cmdDoctor(args);
+        return await cmdDoctor(args);
       default:
         throw new CliError(`Unknown command: ${command}\nRun 'csw help' for usage.`);
     }
   } catch (error) {
     if (error instanceof CliError) {
-      console.error(error.message);
+      // A machine-readable command that already printed its report exits with
+      // a status and no message — don't put a blank line on stderr.
+      if (error.message) console.error(error.message);
       process.exit(error.exitCode);
     }
     throw error;
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

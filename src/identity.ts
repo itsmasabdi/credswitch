@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { AccountConfig } from "./adapters.js";
@@ -44,30 +44,55 @@ export function cliInstalled(cli: string): boolean {
   return found;
 }
 
-/**
- * Ask the provider CLI "who am I" under this account's isolated environment.
- * All managed variables are cleared first so the answer cannot leak in from the shell.
- */
-export function runIdentity(account: AccountConfig): IdentityResult {
-  const adapter = getAdapter(account.adapter);
-  const spec = adapter.identity?.(account);
-  if (!spec) return { ok: true, summary: "no identity check for this adapter" };
-
-  if (!cliInstalled(adapter.cli)) {
-    return { ok: false, summary: `${adapter.cli} is not installed (or not on PATH)` };
-  }
-
+/** Every managed variable cleared, then just this account's own selectors. */
+export function identityEnv(account: AccountConfig): EnvOverrides {
   const overrides: EnvOverrides = {};
   for (const name of allManagedVars()) overrides[name] = null;
-  if (!account.system) Object.assign(overrides, adapter.envFor(account));
+  if (!account.system) Object.assign(overrides, getAdapter(account.adapter).envFor(account));
+  return overrides;
+}
 
-  const result = spawnSync(spec.argv[0], spec.argv.slice(1), {
-    env: applyEnv(process.env, overrides),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 30_000
+/**
+ * Ask the provider CLI "who am I" under this account's isolated environment.
+ * All managed variables are cleared first so the answer cannot leak in from the
+ * shell. Async so callers with many accounts (doctor) can probe concurrently —
+ * these are network round trips, and serial they dominate the command.
+ */
+export function runIdentity(account: AccountConfig): Promise<IdentityResult> {
+  const adapter = getAdapter(account.adapter);
+  const spec = adapter.identity?.(account);
+  if (!spec) return Promise.resolve({ ok: true, summary: "no identity check for this adapter" });
+
+  if (!cliInstalled(adapter.cli)) {
+    return Promise.resolve({ ok: false, summary: `${adapter.cli} is not installed (or not on PATH)` });
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn(spec.argv[0], spec.argv.slice(1), {
+      env: applyEnv(process.env, identityEnv(account)),
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    child.on("error", (error) => resolve({ ok: false, summary: error.message }));
+    child.on("close", (status) => resolve(spec.parse(stdout, stderr, status)));
   });
+}
 
-  if (result.error) return { ok: false, summary: result.error.message };
-  return spec.parse(result.stdout ?? "", result.stderr ?? "", result.status);
+/**
+ * Probe a set of accounts at once. Deduplicated by id: one account shared by
+ * five contexts is one probe, not five.
+ */
+export async function probeIdentities(
+  accounts: Array<{ id: string; account: AccountConfig }>
+): Promise<Map<string, IdentityResult>> {
+  const unique = new Map<string, AccountConfig>();
+  for (const { id, account } of accounts) unique.set(id, account);
+
+  const ids = [...unique.keys()];
+  const results = await Promise.all(ids.map((id) => runIdentity(unique.get(id)!)));
+  return new Map(ids.map((id, index) => [id, results[index]]));
 }

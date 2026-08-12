@@ -1,6 +1,6 @@
 {
   "name": "credswitch",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Give every project its own identity — context switching for AI agents and cloud CLIs (Claude Code, Codex, AWS, Azure, gcloud, GitHub, kubectl).",
   "type": "module",
   "license": "MIT",

@@ -67,6 +67,14 @@ csw doctor               # live "who am I" per provider + drift against pins
 csw run -c acme -- az group list    # or be explicit, no hook needed
 ```
 
+`current`, `list`, and `doctor` all take `--json`, so an agent can check which
+identity it is holding without parsing prose — and `doctor --json` still exits
+2 on drift, which makes it usable as a CI gate:
+
+```console
+$ csw doctor --json | jq '.contexts[].accounts[] | select(.identity.drift)'
+```
+
 ## Under the hood
 
 `csw login` and `csw local` drive four primitives you can also manage directly
@@ -173,10 +181,10 @@ Everyday:
 csw setup                                     one-time: config + shell hook
 csw login <adapter> [--as <n>] [--global]     give THIS folder its own identity
 csw local [<context>]                         bind this folder to a named context (blank: show)
-csw current [--explain]                       what's active, why, and what's denied
+csw current [--explain] [--json]              what's active, why, and what's denied
 csw run [--context <ctx>] -- <cmd> [args]     one command, fully resolved identity
-csw list                                      contexts, accounts, bindings
-csw doctor [<context>]                        paths, CLIs, live identities, drift
+csw list [--json]                             contexts, accounts, bindings
+csw doctor [<context>] [--json]               paths, CLIs, live identities, drift
 ```
 
 Plumbing (the porcelain drives these; use them for reference imports, kubeconfigs, renames):

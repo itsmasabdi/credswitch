@@ -12,6 +12,7 @@ const FAKE_AZ = `#!/bin/sh
 if [ "$1" = "account" ] && [ "$2" = "show" ]; then
   if [ -n "$AZURE_CONFIG_DIR" ] && [ -f "$AZURE_CONFIG_DIR/whoami" ]; then
     who=$(cat "$AZURE_CONFIG_DIR/whoami")
+    echo probe >> "$AZURE_CONFIG_DIR/probes"
     printf '{"user":{"name":"%s"},"name":"sub-%s","tenantId":"tenant-%s"}\\n' "$who" "$who" "$who"
     exit 0
   fi
@@ -1031,6 +1032,65 @@ test("env --cwd stamps the hook key with the config generation", () => {
   const stale = csw(f, ["env", "--cwd", f.home, "--inherit", "ctx-gone"]);
   ok(stale, "a stale floor must not fail the hook");
   assert.match(stale.stdout, /export CREDSWITCH_CONTEXT='ctx-bob'/, "falls back to the default");
+});
+
+test("current, list, and doctor emit machine-readable output", () => {
+  const f = setup();
+  seedTwoAccounts(f);
+  const project = path.join(f.home, "proj-json");
+  fs.mkdirSync(project, { recursive: true });
+  ok(csw(f, ["bind", "ctx-alice", "--dir", project]), "bind");
+
+  const current = csw(f, ["current", "--json"], { cwd: project });
+  ok(current, "current --json");
+  const cur = JSON.parse(current.stdout);
+  assert.equal(cur.context, "ctx-alice");
+  assert.equal(cur.source, "binding");
+  assert.equal(cur.bindingDir, project);
+  assert.equal(cur.accounts[0].id, "azure:alice");
+  assert.ok(cur.accounts[0].env.AZURE_CONFIG_DIR, "selectors are machine-readable, not prose");
+  assert.ok(cur.denied.includes("github"), "denied adapters are enumerated");
+  assert.ok(cur.cleared.includes("GH_TOKEN"), "cleared channels are enumerated");
+
+  const list = JSON.parse(csw(f, ["list", "--json"]).stdout);
+  assert.deepEqual(
+    list.contexts.map((c: { name: string }) => c.name),
+    ["ctx-alice", "ctx-bob"]
+  );
+  assert.deepEqual(list.contexts[0].bindings, [project]);
+  assert.equal(list.accounts.length, 2);
+
+  const healthy = csw(f, ["doctor", "--json"]);
+  ok(healthy, "doctor --json");
+  assert.equal(JSON.parse(healthy.stdout).ok, true);
+
+  // A failing doctor still exits 2, and stdout stays parseable — the point of
+  // the flag is to be usable as a CI gate.
+  fs.writeFileSync(path.join(f.state, "az-alice", "whoami"), "someone-else");
+  const drifted = csw(f, ["doctor", "--json"]);
+  assert.equal(drifted.status, 2);
+  assert.equal(drifted.stderr, "", "no stray message alongside machine-readable output");
+  const report = JSON.parse(drifted.stdout);
+  assert.equal(report.ok, false);
+  const alice = report.contexts
+    .flatMap((c: { accounts: unknown[] }) => c.accounts)
+    .find((a: { id: string }) => a.id === "azure:alice");
+  assert.equal(alice.identity.drift, true);
+  assert.equal(alice.identity.pin, "alice — sub-alice tenant tenant-alice");
+});
+
+test("doctor probes each account once, however many contexts share it", () => {
+  const f = setup();
+  seedTwoAccounts(f);
+  // alice now appears in two contexts; bob's context is replaced by a second
+  // one referencing the same account.
+  ok(csw(f, ["context", "set", "ctx-bob", "azure:alice"]), "share alice");
+  const probes = path.join(f.state, "az-alice", "probes");
+  fs.rmSync(probes, { force: true });
+
+  ok(csw(f, ["doctor"]), "doctor across both contexts");
+  const count = fs.readFileSync(probes, "utf8").trim().split("\n").length;
+  assert.equal(count, 1, `azure:alice was probed ${count} times across two contexts`);
 });
 
 test("csw setup installs the shell hook idempotently", () => {

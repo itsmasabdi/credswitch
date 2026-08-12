@@ -66,6 +66,37 @@ function firstLine(text: string): string {
   return text.split("\n").map((l) => l.trim()).filter(Boolean)[0] ?? "";
 }
 
+/**
+ * Most providers concentrate their whole login state in one directory, named
+ * by one environment variable — so isolating, denying, and creating state are
+ * all the same three lines. Adding a provider of this shape is a table entry,
+ * not an implementation.
+ */
+function singleDirAdapter(spec: {
+  name: string;
+  label: string;
+  cli: string;
+  /** The one variable that redirects this provider's entire state directory. */
+  dirVar: string;
+  /** Other credential channels to clear so nothing leaks from the shell. */
+  alsoClear: string[];
+  login: string[];
+  identity: IdentitySpec;
+}): Adapter {
+  return {
+    name: spec.name,
+    label: spec.label,
+    cli: spec.cli,
+    managedEnv: [spec.dirVar, ...spec.alsoClear],
+    deniedEnv: (root) => ({ [spec.dirVar]: path.join(root, spec.name) }),
+    validateAccount: validateStateDirAccount,
+    envFor: (a) => ({ [spec.dirVar]: expandPath(a.stateDir!) }),
+    freshStateDir: (name) => path.join(stateRoot(), spec.name, name),
+    loginCommand: () => spec.login,
+    identity: () => spec.identity
+  };
+}
+
 /** Set by any profile that authenticates through IAM Identity Center. */
 const SSO_PROFILE_KEY = /^\s*(?:sso_session|sso_start_url)\s*=/m;
 
@@ -160,17 +191,14 @@ const aws: Adapter = {
   })
 };
 
-const azure: Adapter = {
+const azure = singleDirAdapter({
   name: "azure",
   label: "Azure CLI",
   cli: "az",
-  managedEnv: ["AZURE_CONFIG_DIR", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"],
-  deniedEnv: (root) => ({ AZURE_CONFIG_DIR: path.join(root, "azure") }),
-  validateAccount: validateStateDirAccount,
-  envFor: (a) => ({ AZURE_CONFIG_DIR: expandPath(a.stateDir!) }),
-  freshStateDir: (name) => path.join(stateRoot(), "azure", name),
-  loginCommand: () => ["az", "login"],
-  identity: () => ({
+  dirVar: "AZURE_CONFIG_DIR",
+  alsoClear: ["AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"],
+  login: ["az", "login"],
+  identity: {
     argv: ["az", "account", "show", "--output", "json"],
     parse(stdout, stderr, status) {
       if (status !== 0) return { ok: false, summary: firstLine(stderr) || `az exited with status ${status}` };
@@ -184,20 +212,17 @@ const azure: Adapter = {
         return { ok: false, summary: "az returned invalid JSON" };
       }
     }
-  })
-};
+  }
+});
 
-const gcloud: Adapter = {
+const gcloud = singleDirAdapter({
   name: "gcloud",
   label: "Google Cloud SDK",
   cli: "gcloud",
-  managedEnv: ["CLOUDSDK_CONFIG", "CLOUDSDK_ACTIVE_CONFIG_NAME", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_AUTH_ACCESS_TOKEN"],
-  deniedEnv: (root) => ({ CLOUDSDK_CONFIG: path.join(root, "gcloud") }),
-  validateAccount: validateStateDirAccount,
-  envFor: (a) => ({ CLOUDSDK_CONFIG: expandPath(a.stateDir!) }),
-  freshStateDir: (name) => path.join(stateRoot(), "gcloud", name),
-  loginCommand: () => ["gcloud", "auth", "login"],
-  identity: () => ({
+  dirVar: "CLOUDSDK_CONFIG",
+  alsoClear: ["CLOUDSDK_ACTIVE_CONFIG_NAME", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_AUTH_ACCESS_TOKEN"],
+  login: ["gcloud", "auth", "login"],
+  identity: {
     argv: ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
     parse(stdout, stderr, status) {
       if (status !== 0) return { ok: false, summary: firstLine(stderr) || `gcloud exited with status ${status}` };
@@ -205,20 +230,17 @@ const gcloud: Adapter = {
       if (!account) return { ok: false, summary: "no active account (run login)" };
       return { ok: true, summary: account };
     }
-  })
-};
+  }
+});
 
-const github: Adapter = {
+const github = singleDirAdapter({
   name: "github",
   label: "GitHub CLI",
   cli: "gh",
-  managedEnv: ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"],
-  deniedEnv: (root) => ({ GH_CONFIG_DIR: path.join(root, "github") }),
-  validateAccount: validateStateDirAccount,
-  envFor: (a) => ({ GH_CONFIG_DIR: expandPath(a.stateDir!) }),
-  freshStateDir: (name) => path.join(stateRoot(), "github", name),
-  loginCommand: () => ["gh", "auth", "login"],
-  identity: () => ({
+  dirVar: "GH_CONFIG_DIR",
+  alsoClear: ["GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"],
+  login: ["gh", "auth", "login"],
+  identity: {
     argv: ["gh", "auth", "status"],
     parse(stdout, stderr, status) {
       const text = `${stdout}\n${stderr}`;
@@ -227,20 +249,23 @@ const github: Adapter = {
       if (status === 0) return { ok: true, summary: firstLine(stdout) || "logged in" };
       return { ok: false, summary: firstLine(stderr) || firstLine(stdout) || `gh exited with status ${status}` };
     }
-  })
-};
+  }
+});
 
-const claude: Adapter = {
+const claude = singleDirAdapter({
   name: "claude",
   label: "Claude Code",
   cli: "claude",
-  managedEnv: ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"],
-  deniedEnv: (root) => ({ CLAUDE_CONFIG_DIR: path.join(root, "claude") }),
-  validateAccount: validateStateDirAccount,
-  envFor: (a) => ({ CLAUDE_CONFIG_DIR: expandPath(a.stateDir!) }),
-  freshStateDir: (name) => path.join(stateRoot(), "claude", name),
-  loginCommand: () => ["claude", "auth", "login"],
-  identity: () => ({
+  dirVar: "CLAUDE_CONFIG_DIR",
+  alsoClear: [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX"
+  ],
+  login: ["claude", "auth", "login"],
+  identity: {
     argv: ["claude", "auth", "status"],
     parse(stdout, stderr, status) {
       try {
@@ -256,28 +281,26 @@ const claude: Adapter = {
       const message = firstLine(stdout) || firstLine(stderr) || `claude exited with status ${status}`;
       return { ok: status === 0, summary: message };
     }
-  })
-};
+  }
+});
 
-const codex: Adapter = {
+const codex = singleDirAdapter({
   name: "codex",
   label: "Codex CLI",
   cli: "codex",
-  managedEnv: ["CODEX_HOME", "OPENAI_API_KEY"],
-  deniedEnv: (root) => ({ CODEX_HOME: path.join(root, "codex") }),
-  validateAccount: validateStateDirAccount,
-  envFor: (a) => ({ CODEX_HOME: expandPath(a.stateDir!) }),
-  freshStateDir: (name) => path.join(stateRoot(), "codex", name),
-  loginCommand: () => ["codex", "login"],
-  identity: () => ({
+  dirVar: "CODEX_HOME",
+  alsoClear: ["OPENAI_API_KEY"],
+  login: ["codex", "login"],
+  identity: {
     argv: ["codex", "login", "status"],
     parse(stdout, stderr, status) {
       const message = firstLine(stdout) || firstLine(stderr) || `codex exited with status ${status}`;
       return { ok: status === 0, summary: message };
     }
-  })
-};
+  }
+});
 
+/** The one provider selected by a file rather than a directory. */
 const kubernetes: Adapter = {
   name: "kubernetes",
   label: "Kubernetes",
